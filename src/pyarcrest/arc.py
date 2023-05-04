@@ -45,9 +45,15 @@ from pyarcrest.x509 import parsePEM, signRequest
 class ARCRest:
 
     def __init__(self, httpClient, apiBase="/arex", logger=getNullLogger()):
+        """
+        Initialize the base object.
+
+        Note that this class should not be instantiated directly because
+        additional implementations of attributes and methods are required from
+        derived classes.
+        """
         self.logger = logger
         self.apiBase = apiBase
-        self.apiPath = f"{self.apiBase}/rest/1.0"
         self.httpClient = httpClient
 
     def close(self):
@@ -687,6 +693,7 @@ class ARCRest:
     def getClient(cls, url=None, host=None, port=None, proxypath=None, logger=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex"):
         IMPLEMENTED_VERSIONS = {
             "1.0" : ARCRest_1_0,
+            "1.1" : ARCRest_1_1,
         }
 
         httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, logger=logger, blocksize=blocksize, timeout=timeout)
@@ -705,6 +712,7 @@ class ARCRest:
             for version in reversed(apiVersions):
                 if version in IMPLEMENTED_VERSIONS:
                     apiVersion = version
+                    break
             if apiVersion is None:
                 raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
 
@@ -717,6 +725,7 @@ class ARCRest_1_0(ARCRest):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.version = "1.0"
+        self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
     def createJobs(self, jobs, delegationID, queue):
         ceInfo = self.getCEInfo()
@@ -811,6 +820,105 @@ class ARCRest_1_0(ARCRest):
             results = jsonData["job"]
 
         for job, result in zip(tosubmit, results):
+            code, reason = int(result["status-code"]), result["reason"]
+            if code != 201:
+                job.errors.append(ARCHTTPError(code, reason, f"Error submitting job {job.descstr}: {reason}"))
+            else:
+                job.id = result["id"]
+                job.state = result["state"]
+
+
+class ARCRest_1_1(ARCRest):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.version = "1.1"
+        self.apiPath = f"{self.apiBase}/rest/{self.version}"
+
+    def createJobs(self, jobs, delegationID, queue):
+        ceInfo = self.getCEInfo()
+        queueInfo = self._findQueue(queue, ceInfo)
+        if queueInfo is None:
+            raise MatchmakingError(f"Requested queue {queue} does not exist")
+        runtimes = self._findRuntimes(ceInfo)
+
+        jobdescs = arc.JobDescriptionList()
+        tosubmit = []  # sublist of jobs that will be submitted
+        bulkdesc = ""
+        for job in jobs:
+            job.delegid = delegationID
+
+            # parse job description
+            if not arc.JobDescription_Parse(job.descstr, jobdescs):
+                job.errors.append(DescriptionParseError("Failed to parse description"))
+                self.logger.debug(f"Failed to parse description {job.descstr}")
+                continue
+            desc = jobdescs[-1]
+
+            # matchmaking
+            #
+            # TODO: only direct version comparison is done for runtime
+            # envrionment; some other parameters are not matched:
+            # - memory (xrsl): which value is it from info document?
+            #   MaxVirtualMemory?
+            # - disk: no relevant value found in info document
+            wallTime = desc.Resources.TotalWallTime.range.max
+            envs = [str(env) for env in desc.Resources.RunTimeEnvironment.getSoftwareList()]
+            maxWallTime = int(queueInfo.get("MaxWallTime", sys.maxsize))
+            error = None
+            if wallTime > maxWallTime:
+                error = MatchmakingError(f"Requested wall time {wallTime} higher than available {maxWallTime}")
+            else:
+                for env in envs:
+                    if env not in runtimes:
+                        error = MatchmakingError(f"Requested environment {env} not available")
+                        break
+            if error is not None:
+                job.errors.append(error)
+                self.logger.debug(str(error))
+                continue
+
+            # do client processing of job description
+            processJobDescription(desc)
+
+            # get input files from description
+            job.getArclibInputFiles(desc)
+
+            # read name from description
+            job.name = desc.Identification.JobName
+            self.logger.debug(f"Job name from description: {job.name}")
+
+            # unparse modified description, remove xml version node because it
+            # is not accepted by ARC CE, add to bulk description
+            unparseResult = desc.UnParse("emies:adl")
+            if not unparseResult[0]:
+                job.errors.append(DescriptionUnparseError(f"Could not unparse modified description of job {job.name}"))
+                self.logger.debug(f"Could not unparse modified description of job {job.name}")
+                continue
+            descstart = unparseResult[1].find("<ActivityDescription")
+            bulkdesc += unparseResult[1][descstart:]
+
+            tosubmit.append(job)
+
+        if not tosubmit:
+            return
+
+        # merge into bulk description
+        if len(tosubmit) > 1:
+            bulkdesc = f"<ActivityDescriptions>{bulkdesc}</ActivityDescriptions>"
+
+        # submit jobs to ARC
+        status, text = self._requestJSON(
+            "POST",
+            f"{self.apiPath}/jobs?action=new&queue={queue}&delegation_id={delegationID}",
+            data=bulkdesc,
+            headers={"Content-Type": "application/xml"},
+        )
+        if status != 201:
+            raise ARCHTTPError(status, text, f"Error submitting jobs: {status} {text}")
+        jsonData = json.loads(text)
+
+        for job, result in zip(tosubmit, jsonData["job"]):
             code, reason = int(result["status-code"]), result["reason"]
             if code != 201:
                 job.errors.append(ARCHTTPError(code, reason, f"Error submitting job {job.descstr}: {reason}"))
