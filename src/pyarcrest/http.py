@@ -6,15 +6,11 @@ from urllib.parse import urlencode, urlparse
 from pyarcrest.common import getNullLogger
 from pyarcrest.errors import HTTPClientError
 
-HTTP_BUFFER_SIZE = 2**23
 
-
-# TODO: hardcoded timeout for http.client connection
-# TODO: when required python version becomes 3.7 >=, use buffer size for HTTP
-#       client
+# TODO: blocksize is not used until Python 3.7 becomes minimum version
 class HTTPClient:
 
-    def __init__(self, url=None, host=None, port=None, proxypath=None, isHTTPS=False, logger=getNullLogger()):
+    def __init__(self, url=None, host=None, port=None, proxypath=None, isHTTPS=False, logger=getNullLogger(), blocksize=None, timeout=None):
         """Process parameters and create HTTP connection."""
         self.logger = logger
 
@@ -54,14 +50,20 @@ class HTTPClient:
         else:
             context = None
 
+        kwargs = {}
+        if blocksize is not None:
+            kwargs["blocksize"] = blocksize
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+
         if useHTTPS:
             if not self.port:
                 self.port = 443
-            self.conn = HTTPSConnection(self.host, port=self.port, context=context, timeout=600)
+            self.conn = HTTPSConnection(self.host, port=self.port, context=context, **kwargs)
         else:
             if not self.port:
                 self.port = 80
-            self.conn = HTTPConnection(self.host, port=self.port, timeout=600)
+            self.conn = HTTPConnection(self.host, port=self.port, **kwargs)
 
         self.isHTTPS = useHTTPS
         self.proxypath = proxypath

@@ -50,8 +50,8 @@ from pyarcrest.x509 import parsePEM, signRequest
 class ARCRest:
 
     @classmethod
-    def getClient(cls, hostURL, apiBase="/arex", proxypath=None, logger=getNullLogger(), version=None):
-        httpClient = HTTPClient(hostURL, proxypath=proxypath, logger=logger)
+    def getClient(cls, hostURL, apiBase="/arex", proxypath=None, logger=getNullLogger(), version=None, blocksize=None, timeout=None):
+        httpClient = HTTPClient(hostURL, proxypath=proxypath, logger=logger, blocksize=blocksize, timeout=timeout)
         apiVersions = cls._getAPIVersions(httpClient, apiBase=apiBase)
         if not apiVersions:
             raise ARCError("No supported API versions")
