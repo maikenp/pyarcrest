@@ -638,24 +638,31 @@ class ARCRest:
 
     @classmethod
     def getClient(cls, url=None, host=None, port=None, proxypath=None, logger=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex"):
+        IMPLEMENTED_VERSIONS = {
+            "1.0" : ARCRest_1_0,
+        }
+
         httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, logger=logger, blocksize=blocksize, timeout=timeout)
         apiVersions = cls.getAPIVersionsStatic(httpClient, apiBase=apiBase)
         if not apiVersions:
-            raise ARCError("No supported API versions")
+            raise ARCError("No supported API versions on CE")
 
         if version is not None:
+            if version not in IMPLEMENTED_VERSIONS:
+                raise ARCError(f"No client support for requested API version {version}")
             if version not in apiVersions:
-                raise ARCError(f"API version {version} not among supported ones {apiVersions}")
+                raise ARCError(f"API version {version} not among CE supported API versions {apiVersions}")
             apiVersion = version
         else:
-            apiVersion = apiVersions[-1]
+            apiVersion = None
+            for version in reversed(apiVersions):
+                if version in IMPLEMENTED_VERSIONS:
+                    apiVersion = version
+            if apiVersion is None:
+                raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
 
-        if apiVersion == "1.0":
-            return ARCRest_1_0(httpClient, apiBase=apiBase, logger=logger)
-        #elif apiVersion == "1.1":
-        #    return ARCRest_1_1(httpClient, apiBase=apiBase, logger=logger)
-        else:
-            raise ARCError(f"No client implementation for supported API version {apiVersion}")
+        logger.debug(f"API version {apiVersion} selected")
+        return IMPLEMENTED_VERSIONS[apiVersion](httpClient, apiBase=apiBase, logger=logger)
 
 
 class ARCRest_1_0(ARCRest):
