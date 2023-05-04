@@ -1,7 +1,9 @@
 import argparse
 import json
+import logging
 import os
 import pathlib
+import sys
 
 from pyarcrest.arc import ARCJob, ARCRest
 
@@ -12,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser("Execute ARC operations")
     parser.add_argument("cluster", type=str, help="hostname (with optional port) of the cluster")
     parser.add_argument("-P", "--proxy", type=str, default=PROXYPATH, help="path to proxy cert")
+    parser.add_argument("-v", "--verbose", action="store_true", help="print debug output")
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -54,7 +57,16 @@ def main():
 
     args = parser.parse_args()
 
-    arcrest = ARCRest.getClient(url=args.cluster, proxypath=args.proxy)
+    kwargs = {}
+    if args.verbose:
+        logger = logging.getLogger()
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        kwargs["logger"] = logging.getLogger()
+    arcrest = ARCRest.getClient(url=args.cluster, proxypath=args.proxy, **kwargs)
 
     if args.command == "jobs" and args.jobs == "list":
         status, text = arcrest._requestJSON("GET", f"{arcrest.apiPath}/jobs")
