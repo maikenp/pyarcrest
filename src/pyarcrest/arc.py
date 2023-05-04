@@ -38,7 +38,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
 import arc
-from pyarcrest.common import getNullLogger
+from pyarcrest.common import getNullLogger, HTTP_BUFFER_SIZE
 from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
                               DescriptionUnparseError, InputFileError,
                               MatchmakingError, MissingDiagnoseFile,
@@ -105,7 +105,7 @@ class ARCRest:
 
     # TODO: blocksize is only added in python 3.7!!!!!!!
     # TODO: hardcoded number of upload workers
-    def uploadJobFiles(self, jobs, workers=10, blocksize=HTTP_BUFFER_SIZE):
+    def uploadJobFiles(self, jobs, workers=10, blocksize=None):
         # create transfer queues
         uploadQueue = queue.Queue()
         resultQueue = queue.Queue()
@@ -136,7 +136,8 @@ class ARCRest:
                 port=self.httpClient.conn.port,
                 isHTTPS=True,
                 proxypath=self.httpClient.proxypath,
-                logger=self.logger
+                logger=self.logger,
+                blocksize=blocksize,
             ))
 
         self.logger.debug(f"Created {len(httpClients)} upload workers")
@@ -151,7 +152,7 @@ class ARCRest:
                     jobsdict,
                     uploadQueue,
                     resultQueue,
-                    logger=self.logger
+                    logger=self.logger,
                 ))
             concurrent.futures.wait(futures)
 
@@ -242,7 +243,7 @@ class ARCRest:
 
     # TODO: blocksize is only added in python 3.7!!!!!!!
     # TODO: hardcoded workers
-    def downloadJobFiles(self, downloadDir, jobs, workers=10, blocksize=HTTP_BUFFER_SIZE):
+    def downloadJobFiles(self, downloadDir, jobs, workers=10, blocksize=None):
         transferQueue = TransferQueue(workers)
         resultQueue = queue.Queue()
 
@@ -272,7 +273,8 @@ class ARCRest:
                 port=self.httpClient.conn.port,
                 isHTTPS=True,
                 proxypath=self.httpClient.proxypath,
-                logger=self.logger
+                logger=self.logger,
+                blocksize=blocksize,
             ))
 
         self.logger.debug(f"Created {len(httpClients)} download workers")
@@ -288,7 +290,8 @@ class ARCRest:
                     downloadDir,
                     jobsdict,
                     self.apiPath,
-                    logger=self.logger
+                    logger=self.logger,
+                    blocksize=blocksize,
                 ))
             concurrent.futures.wait(futures)
 
@@ -504,7 +507,10 @@ class ARCRest:
         return cls._loadJSON(status, jsonData)
 
     @classmethod
-    def _downloadFile(cls, httpClient, url, path):
+    def _downloadFile(cls, httpClient, url, path, blocksize=None):
+        if blocksize is None:
+            blocksize = HTTP_BUFFER_SIZE
+
         resp = httpClient.request("GET", url)
 
         if resp.status != 200:
@@ -513,10 +519,10 @@ class ARCRest:
 
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
-            data = resp.read(HTTP_BUFFER_SIZE)
+            data = resp.read(blocksize)
             while data:
                 f.write(data)
-                data = resp.read(HTTP_BUFFER_SIZE)
+                data = resp.read(blocksize)
 
     @classmethod
     def _uploadFile(cls, httpClient, url, path):
@@ -598,7 +604,7 @@ class ARCRest:
                     logger.debug(f"Upload {upload['path']} to {upload['url']} for job {upload['jobid']} failed: {exc}")
 
     @classmethod
-    def _downloadTransferWorker(cls, httpClient, transferQueue, resultQueue, downloadDir, jobsdict, endpoint, logger=getNullLogger()):
+    def _downloadTransferWorker(cls, httpClient, transferQueue, resultQueue, downloadDir, jobsdict, endpoint, logger=getNullLogger(), blocksize=None):
         while True:
             try:
                 transfer = transferQueue.get()
@@ -615,7 +621,7 @@ class ARCRest:
                     # download file
                     path = f"{downloadDir}/{transfer['jobid']}/{transfer['path']}"
                     try:
-                        cls._downloadFile(httpClient, transfer["url"], path)
+                        cls._downloadFile(httpClient, transfer["url"], path, blocksize=blocksize)
                     except Exception as exc:
                         error = exc
                         if isinstance(exc, ARCHTTPError):

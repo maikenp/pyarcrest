@@ -43,8 +43,9 @@ class HTTPClient:
             context = None
 
         kwargs = {}
-        if blocksize is not None:
-            kwargs["blocksize"] = blocksize
+        # TODO: must not pass for as long as python 3.6 is used
+        #if blocksize is not None:
+        #    kwargs["blocksize"] = blocksize
         if timeout is not None:
             kwargs["timeout"] = timeout
 
