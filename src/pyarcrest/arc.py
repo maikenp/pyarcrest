@@ -47,64 +47,202 @@ from pyarcrest.http import HTTPClient
 from pyarcrest.x509 import parsePEM, signRequest
 
 
+# TODO: blocksize can only be used with Python >= 3.7
+
+
 class ARCRest:
-
-    @classmethod
-    def getClient(cls, hostURL, apiBase="/arex", proxypath=None, logger=getNullLogger(), version=None, blocksize=None, timeout=None):
-        httpClient = HTTPClient(hostURL, proxypath=proxypath, logger=logger, blocksize=blocksize, timeout=timeout)
-        apiVersions = cls._getAPIVersions(httpClient, apiBase=apiBase)
-        if not apiVersions:
-            raise ARCError("No supported API versions")
-
-        # /rest/1.0 compatibility
-        if not isinstance(apiVersions["version"], list):
-            apiVersions = [apiVersions["version"]]
-        else:
-            apiVersions = apiVersions["version"]
-
-        if version is not None:
-            if version not in apiVersions:
-                raise ARCError(f"API version {version} not among supported ones {apiVersions}")
-            apiVersion = version
-        else:
-            apiVersion = apiVersions[-1]
-
-        if apiVersion == "1.0":
-            return ARCRest_1_0(httpClient, apiBase=apiBase, logger=logger)
-        elif apiVersion == "1.1":
-            return ARCRest_1_1(httpClient, apiBase=apiBase, logger=logger)
 
     def __init__(self, httpClient, apiBase="/arex", logger=getNullLogger()):
         self.logger = logger
         self.apiBase = apiBase
+        self.apiPath = f"{self.apiBase}/rest/1.0"
         self.httpClient = httpClient
 
     def close(self):
         self.httpClient.close()
 
+    ### Direct operations on ARC CE ###
+
     def getAPIVersions(self):
-        return self._getAPIVersions(self.httpClient, apiBase=self.apiBase)
+        return self.getAPIVersionsStatic(self.httpClient, self.apiBase)
 
     def getCEInfo(self):
-        status, jsonData = self._requestJSON("GET", f"{self.apiPath}/info")
+        status, text = self._requestJSON("GET", f"{self.apiPath}/info")
         if status != 200:
-            raise ARCHTTPError(status, jsonData, f"Error getting ARC CE info - {status} {jsonData}")
-        return self._loadJSON(status, jsonData)
+            raise ARCHTTPError(status, text, f"Error getting ARC CE info: {status} {text}")
+        return json.loads(text)
 
     def getJobsList(self):
-        status, jsonData = self._requestJSON("GET", f"{self.apiPath}/jobs")
+        status, text = self._requestJSON("GET", f"{self.apiPath}/jobs")
         if status != 200:
-            raise ARCHTTPError(status, jsonData, f"ARC jobs list error - {status} {jsonData}")
-        jsonData = self._loadJSON(status, jsonData)
+            raise ARCHTTPError(status, text, f"Error getting jobs list: {status} {text}")
 
         # /rest/1.0 compatibility
-        if isinstance(jsonData["job"], dict):
-            return [jsonData["job"]]
-        else:
-            return jsonData["job"]
+        try:
+            jsonData = json.loads(text)["job"]
+        except json.JSONDecodeError as exc:
+            if exc.doc == "":
+                jsonData = []
+            else:
+                raise
+        if isinstance(jsonData, dict):
+            jsonData = [jsonData]
 
-    # TODO: blocksize is only added in python 3.7!!!!!!!
-    # TODO: hardcoded number of upload workers
+        return [ARCJob(job["id"]) for job in jsonData]
+
+    def createJobs(self, jobs, delegationID, queue):
+        raise Exception("Not implemented in the base class")
+
+    def getJobsInfo(self, jobs):
+        results = self._manageJobs(jobs, "info")
+        for job, result in zip(jobs, results):
+            code, reason = int(result["status-code"]), result["reason"]
+            if code != 200:
+                job.errors.append(ARCHTTPError(code, reason, f"Error getting info for job {job.id}: {code} {reason}"))
+            elif "info_document" not in result:
+                job.errors.append(NoValueInARCResult(f"No info document in successful info response for job {job.id}"))
+            else:
+                job.updateFromInfo(result["info_document"])
+
+    def getJobsStatus(self, jobs):
+        results = self._manageJobs(jobs, "status")
+        for job, result in zip(jobs, results):
+            code, reason = int(result["status-code"]), result["reason"]
+            if code != 200:
+                job.errors.append(ARCHTTPError(code, reason, f"Error getting status for job {job.id}: {code} {reason}"))
+            elif "state" not in result:
+                job.errors.append(NoValueInARCResult("No state in successful status response"))
+            else:
+                job.state = result["state"]
+
+    def killJobs(self, jobs):
+        results = self._manageJobs(jobs, "kill")
+        for job, result in zip(jobs, results):
+            code, reason = int(result["status-code"]), result["reason"]
+            if code != 202:
+                job.errors.append(ARCHTTPError(code, reason, f"Error killing job {job.id}: {code} {reason}"))
+
+    def cleanJobs(self, jobs):
+        results = self._manageJobs(jobs, "clean")
+        for job, result in zip(jobs, results):
+            code, reason = int(result["status-code"]), result["reason"]
+            if code != 202:
+                job.errors.append(ARCHTTPError(code, reason, f"Error cleaning job {job.id}: {code} {reason}"))
+
+    def restartJobs(self, jobs):
+        results = self._manageJobs(jobs, "restart")
+        for job, result in zip(jobs, results):
+            code, reason = int(result["status-code"]), result["reason"]
+            if code != 202:
+                job.errors.append(ARCHTTPError(code, reason, f"Error restarting job {job.id}: {code} {reason}"))
+
+    def getJobsDelegations(self, jobs, logger=None):
+        results = self._manageJobs(jobs, "delegations")
+        for job, result in zip(jobs, results):
+            code, reason = int(result["status-code"]), result["reason"]
+            if code != 202:
+                job.errors.append(ARCHTTPError(code, reason, f"Error getting delegations for job {job.id}: {code} {reason}"))
+            elif "delegation_id" not in result:
+                job.errors.append(NoValueInARCResult("No delegation ID in successful response"))
+            else:
+                job.delegid = result["delegation_id"]
+
+    def downloadFile(self, url, path, blocksize=None):
+        if blocksize is None:
+            blocksize = HTTP_BUFFER_SIZE
+
+        resp = self.httpClient.request("GET", url)
+
+        if resp.status != 200:
+            text = resp.read().decode()
+            raise ARCHTTPError(resp.status, text, f"Error downloading URL {url} to {path}: {resp.status} {text}")
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            data = resp.read(blocksize)
+            while data:
+                f.write(data)
+                data = resp.read(blocksize)
+
+    def uploadFile(self, url, path):
+        with open(path, "rb") as f:
+            resp = self.httpClient.request("PUT", url, data=f)
+            text = resp.read().decode()
+            if resp.status != 200:
+                raise ARCHTTPError(resp.status, text, f"Upload {path} to {url} failed: {resp.status} {text}")
+
+    def downloadListing(self, url):
+        status, text = self._requestJSON("GET", url)
+        if status != 200:
+            raise ARCHTTPError(status, text, f"Error downloading listing {url}: {status} {text}")
+
+        # /rest/1.0 compatibility
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            if exc.doc == "":
+                return {}
+            else:
+                raise
+
+    def getDelegationsList(self):
+        status, text = self._requestJSON("GET", f"{self.apiPath}/delegations")
+        if status != 200:
+            raise ARCHTTPError(status, text, f"Error getting delegations list: {status} {text}")
+
+        # /rest/1.0 compatibility
+        try:
+            return json.loads(text)["delegation"]
+        except json.JSONDecodeError as exc:
+            if exc.doc == "":
+                return []
+            else:
+                raise
+
+    # Returns a tuple of CSR and delegation ID
+    def requestNewDelegation(self):
+        url = f"{self.apiPath}/delegations?action=new"
+        resp = self.httpClient.request("POST", url)
+        respstr = resp.read().decode()
+        if resp.status != 201:
+            raise ARCHTTPError(resp.status, respstr, f"Cannot get delegation CSR: {resp.status} {respstr}")
+        return respstr, resp.getheader("Location").split("/")[-1]
+
+    def uploadDelegation(self, delegationID, signedCert):
+        url = f"{self.apiPath}/delegations/{delegationID}"
+        headers = {"Content-Type": "application/x-pem-file"}
+        resp = self.httpClient.request("PUT", url, data=signedCert, headers=headers)
+        respstr = resp.read().decode()
+        if resp.status != 200:
+            raise ARCHTTPError(resp.status, respstr, f"Cannot upload delegated cert for delegation {delegationID}: {resp.status} {respstr}")
+
+    def getDelegationCert(self, delegationID):
+        url = f"{self.apiPath}/delegations/{delegationID}?action=get"
+        resp = self.httpClient.request("POST", url)
+        respstr = resp.read().decode()
+        if resp.status != 200:
+            raise ARCHTTPError(resp.status, respstr, f"Cannot get cert for delegation {delegationID}: {resp.status} {respstr}")
+        return respstr
+
+    # returns CSR
+    def requestDelegationRenewal(self, delegationID):
+        url = f"{self.apiPath}/delegations/{delegationID}?action=renew"
+        resp = self.httpClient.request("POST", url)
+        respstr = resp.read().decode()
+        if resp.status != 200:
+            raise ARCHTTPError(resp.status, respstr, f"Cannot renew delegation {delegationID}: {resp.status} {respstr}")
+        return respstr
+
+    def deleteDelegation(self, delegationID):
+        url = f"{self.apiPath}/delegations/{delegationID}?action=delete"
+        resp = self.httpClient.request("POST", url)
+        respstr = resp.read().decode()
+        if resp.status != 200:
+            raise ARCHTTPError(resp.status, respstr, f"Cannot delete delegation {delegationID}: {resp.status} {respstr}")
+
+    ### Higher level job operations ###
+
+    # TODO: HARDCODED
     def uploadJobFiles(self, jobs, workers=10, blocksize=None, timeout=None):
         # create upload queue
         uploadQueue = queue.Queue()
@@ -118,112 +256,37 @@ class ARCRest:
             return
         numWorkers = min(uploadQueue.qsize(), workers)
 
-        # create HTTP clients for workers
-        httpClients = []
+        # create REST clients for workers
+        restClients = []
         for i in range(numWorkers):
-            httpClients.append(HTTPClient(
+            restClients.append(self.getClient(
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
-                isHTTPS=True,
                 proxypath=self.httpClient.proxypath,
                 logger=self.logger,
                 blocksize=blocksize,
                 timeout=timeout,
+                apiBase=self.apiBase,
             ))
-        self.logger.debug(f"Created {len(httpClients)} upload workers")
+        self.logger.debug(f"Created {len(restClients)} upload workers")
 
         # run upload threads on upload queue
         with concurrent.futures.ThreadPoolExecutor(max_workers=numWorkers) as pool:
             futures = []
-            for httpClient in httpClients:
+            for restClient in restClients:
                 futures.append(pool.submit(
                     self._uploadTransferWorker,
-                    httpClient,
+                    restClient,
                     uploadQueue,
                     logger=self.logger,
                 ))
             concurrent.futures.wait(futures)
 
         # close HTTP clients
-        for httpClient in httpClients:
-            httpClient.close()
+        for restClient in restClients:
+            restClient.close()
 
-    def getJobsInfo(self, jobs):
-        results = self._manageJobs(jobs, "info")
-        for job, result in zip(jobs, results):
-            if self._checkJobOperationSuccess(job, result, 200):
-                if "info_document" not in result:
-                    job.errors.append(NoValueInARCResult("No info document in successful info response"))
-                else:
-                    job.updateFromInfo(result["info_document"])
-
-    def getJobsStatus(self, jobs):
-        results = self._manageJobs(jobs, "status")
-        for job, result in zip(jobs, results):
-            if self._checkJobOperationSuccess(job, result, 200):
-                if "state" not in result:
-                    job.errors.append(NoValueInARCResult("No state in successful status response"))
-                else:
-                    job.state = result["state"]
-
-    def killJobs(self, jobs):
-        results = self._manageJobs(jobs, "kill")
-        for job, result in zip(jobs, results):
-            self._checkJobOperationSuccess(job, result, 202)
-
-    def cleanJobs(self, jobs):
-        results = self._manageJobs(jobs, "clean")
-        for job, result in zip(jobs, results):
-            self._checkJobOperationSuccess(job, result, 202)
-
-    def restartJobs(self, jobs):
-        results = self._manageJobs(jobs, "restart")
-        for job, result in zip(jobs, results):
-            self._checkJobOperationSuccess(job, result, 202)
-
-    def getJobsDelegations(self, jobs, logger=None):
-        results = self._manageJobs(jobs, "delegations")
-        for job, result in zip(jobs, results):
-            if self._checkJobOperationSuccess(job, result, 200):
-                if "delegation_id" not in result:
-                    job.errors.append(NoValueInARCResult("No delegation ID in successful response"))
-                else:
-                    job.delegid = result["delegation_id"]
-
-    def downloadFile(self, url, path):
-        self._downloadFile(self.httpClient, url, path)
-
-    def uploadFile(self, url, path):
-        self._uploadFile(self.httpClient, url, path)
-
-    def downloadListing(self, url):
-        self._downloadListing(self.httpClient, url)
-
-    def createDelegation(self, lifetime=None):
-        csr, delegationID = self._POSTNewDelegation()
-        self._PUTDelegation(delegationID, csr, lifetime=lifetime)
-        self.logger.debug(f"Successfully created delegation {delegationID}")
-        return delegationID
-
-    def renewDelegation(self, delegationID, lifetime=None):
-        csr = self._POSTRenewDelegation(delegationID)
-        self._PUTDelegation(delegationID, csr, lifetime=lifetime)
-        self.logger.debug(f"Successfully renewed delegation {delegationID}")
-
-    def deleteDelegation(self, delegationID):
-        resp = self.httpClient.request(
-            'POST',
-            f'{self.apiPath}/delegations/{delegationID}?action=delete'
-        )
-        respstr = resp.read().decode()
-
-        if resp.status != 202:
-            raise ARCHTTPError(resp.status, respstr, f"Error deleting delegation {delegationID}: {resp.status} {respstr}")
-
-        self.logger.debug(f"Successfully deleted delegation {delegationID}")
-
-    # TODO: blocksize is only added in python 3.7!!!!!!!
-    # TODO: hardcoded workers
+    # TODO: HARDCODED
     def downloadJobFiles(self, downloadDir, jobs, workers=10, blocksize=None, timeout=None):
         transferQueue = TransferQueue(workers)
 
@@ -239,37 +302,100 @@ class ARCRest:
             url = f"{self.apiPath}/jobs/{job.id}/session"
             transferQueue.put(FileTransfer(job, url, "", cancelEvent=cancelEvent, type="listing"))
 
-        # open connections for thread workers
-        httpClients = []
+        # create REST clients for workers
+        restClients = []
         for i in range(workers):
-            httpClients.append(HTTPClient(
+            restClients.append(self.getClient(
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
-                isHTTPS=True,
                 proxypath=self.httpClient.proxypath,
                 logger=self.logger,
                 blocksize=blocksize,
                 timeout=timeout,
+                apiBase=self.apiBase,
             ))
 
-        self.logger.debug(f"Created {len(httpClients)} download workers")
+        self.logger.debug(f"Created {len(restClients)} download workers")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             futures = []
-            for httpClient in httpClients:
+            for restClient in restClients:
                 futures.append(pool.submit(
                     self._downloadTransferWorker,
-                    httpClient,
+                    restClient,
                     transferQueue,
                     downloadDir,
-                    self.apiPath,
                     logger=self.logger,
-                    blocksize=blocksize,
                 ))
             concurrent.futures.wait(futures)
 
-        for httpClient in httpClients:
-            httpClient.close()
+        for restClient in restClients:
+            restClient.close()
+
+    def createDelegation(self, lifetime=None):
+        csr, delegationID = self.requestNewDelegation()
+        pem = self._signCSR(csr, lifetime=lifetime)
+        self.uploadDelegation(delegationID, pem)
+        return delegationID
+
+    def renewDelegation(self, delegationID, lifetime=None):
+        csr = self.requestDelegationRenewal(delegationID)
+        pem = self._signCSR(csr, lifetime=lifetime)
+        try:
+            self.uploadDelegation(delegationID, pem)
+        except Exception as exc:
+            self.deleteDelegation(delegationID)
+            raise
+
+    def submitJobs(self, queue, jobs, uploadData=True, workers=10, blocksize=None, timeout=None):
+        # get delegation for proxy
+        delegationID = self.createDelegation()
+
+        # submit job descriptions to ARC CE
+        self.createJobs(jobs, delegationID, queue)
+
+        # upload jobs' local input data
+        if uploadData:
+            toupload = []
+            for job in jobs:
+                if not job.errors:
+                    toupload.append(job)
+            self.uploadJobFiles(toupload, workers=workers, blocksize=blocksize, timeout=timeout)
+
+    ### Private support methods
+
+    def _signCSR(self, csrStr, lifetime=None):
+        with open(self.httpClient.proxypath) as f:
+            proxyStr = f.read()
+        proxyCert, _, issuerChains = parsePEM(proxyStr)
+        chain = proxyCert.public_bytes(serialization.Encoding.PEM).decode() + issuerChains + '\n'
+        csr = x509.load_pem_x509_csr(csrStr.encode(), default_backend())
+        cert = signRequest(csr, self.httpClient.proxypath, lifetime=lifetime).decode()
+        pem = (cert + chain).encode()
+        return pem
+
+    def _getInputTransfers(self, job, uploadQueue):
+        cancelEvent = threading.Event()
+        for name, source in job.inputFiles.items():
+            try:
+                path = isLocalInputFile(name, source)
+            except InputFileError as exc:
+                job.errors.append(exc)
+                self.logger.debug(f"Error parsing input {name} at {source} for job {job.id}: {exc}")
+                continue
+            if not path:
+                self.logger.debug(f"Skipping non local input {name} at {source} for job {job.id}")
+                continue
+
+            if not os.path.isfile(path):
+                msg = f"Local input {name} at {path} for job {job.id} is not a file"
+                job.errors.append(InputFileError(msg))
+                self.logger.debug(msg)
+                continue
+
+            url = f"{self.apiPath}/jobs/{job.id}/session/{name}"
+            uploadQueue.put(FileTransfer(job, url, path, cancelEvent=cancelEvent))
+            self.logger.debug(f"Will upload local input {name} at {path} for job {job.id}")
 
     def _getDiagnoseTransfers(self, job, transferQueue, cancelEvent):
         DIAG_FILES = [
@@ -316,76 +442,16 @@ class ARCRest:
             transferQueue.put(FileTransfer(job, url, diagFile, cancelEvent=cancelEvent, type="diagnose"))
         job.downloadFiles = newDownloads
 
-    def _POSTNewDelegation(self):
-        resp = self.httpClient.request(
-            "POST",
-            f"{self.apiPath}/delegations?action=new",
-        )
-        respstr = resp.read().decode()
-
-        if resp.status != 201:
-            raise ARCHTTPError(resp.status, respstr, f"Cannot create delegation - {resp.status} {respstr}")
-
-        return respstr, resp.getheader('Location').split('/')[-1]
-
-    def _POSTRenewDelegation(self, delegationID):
-        resp = self.httpClient.request(
-            "POST",
-            f"{self.apiPath}/delegations/{delegationID}?action=renew",
-        )
-        respstr = resp.read().decode()
-
-        if resp.status != 201:
-            raise ARCHTTPError(resp.status, respstr, f"Cannot renew delegation {delegationID}: {resp.status} {respstr}")
-
-        return respstr
-
-    def _PUTDelegation(self, delegationID, csrStr, lifetime=None):
-        try:
-            with open(self.httpClient.proxypath) as f:
-                proxyStr = f.read()
-
-            proxyCert, _, issuerChains = parsePEM(proxyStr)
-            chain = proxyCert.public_bytes(serialization.Encoding.PEM).decode() + issuerChains + '\n'
-            csr = x509.load_pem_x509_csr(csrStr.encode(), default_backend())
-            cert = signRequest(csr, self.httpClient.proxypath, lifetime=lifetime).decode()
-            pem = (cert + chain).encode()
-
-            resp = self.httpClient.request(
-                'PUT',
-                f'{self.apiPath}/delegations/{delegationID}',
-                data=pem,
-                headers={'Content-Type': 'application/x-pem-file'}
-            )
-            respstr = resp.read().decode()
-
-            if resp.status != 200:
-                raise ARCHTTPError(resp.status, respstr, f"Cannot upload delegated cert: {resp.status} {respstr}")
-
-        # cryptography exceptions are handled with the base exception so these
-        # exceptions need to be handled explicitly to be passed through
-        except (HTTPException, ConnectionError):
-            raise
-
-        except Exception as exc:
-            try:
-                self.deleteDelegation(delegationID)
-            # ignore this error, delegations get deleted automatically anyway
-            # and there is no simple way to encode both errors for now
-            except (HTTPException, ConnectionError):
-                pass
-            raise ARCError(f"Error delegating proxy {self.httpClient.proxypath} for delegation {delegationID}: {exc}")
+    def _requestJSON(self, *args, **kwargs):
+        return self._requestJSONStatic(self.httpClient, *args, **kwargs)
 
     def _manageJobs(self, jobs, action):
-        ACTIONS = ("info", "status", "kill", "clean", "restart", "delegations")
         if not jobs:
             return []
 
-        if action not in ACTIONS:
-            raise ARCError(f"Invalid job management operation: {action}")
-
         # JSON data for request
         tomanage = [{"id": job.id} for job in jobs]
+
         # /rest/1.0 compatibility
         if len(tomanage) == 1:
             jsonData = {"job": tomanage[0]}
@@ -393,14 +459,11 @@ class ARCRest:
             jsonData = {"job": tomanage}
 
         # execute action and get JSON result
-        status, jsonData = self._requestJSON(
-            "POST",
-            f"{self.apiPath}/jobs?action={action}",
-            jsonData=jsonData,
-        )
+        url = f"{self.apiPath}/jobs?action={action}"
+        status, text = self._requestJSON("POST", url, jsonData=jsonData)
         if status != 201:
-            raise ARCHTTPError(status, jsonData, f"ARC jobs \"{action}\" action error: {status} {jsonData}")
-        jsonData = self._loadJSON(status, jsonData)
+            raise ARCHTTPError(status, text, f"ARC jobs \"{action}\" action error: {status} {text}")
+        jsonData = json.loads(text)
 
         # /rest/1.0 compatibility
         if isinstance(jsonData["job"], dict):
@@ -408,96 +471,7 @@ class ARCRest:
         else:
             return jsonData["job"]
 
-    def _getInputTransfers(self, job, uploadQueue):
-        cancelEvent = threading.Event()
-        for name, source in job.inputFiles.items():
-            try:
-                path = isLocalInputFile(name, source)
-            except InputFileError as exc:
-                job.errors.append(exc)
-                self.logger.debug(f"Error parsing input {name} at {source} for job {job.id}: {exc}")
-                continue
-            if not path:
-                self.logger.debug(f"Skipping non local input {name} at {source} for job {job.id}")
-                continue
-
-            if not os.path.isfile(path):
-                msg = f"Local input {name} at {path} for job {job.id} is not a file"
-                job.errors.append(InputFileError(msg))
-                self.logger.debug(msg)
-                continue
-
-            url = f"{self.apiPath}/jobs/{job.id}/session/{name}"
-            uploadQueue.put(FileTransfer(job, url, path, cancelEvent=cancelEvent))
-            self.logger.debug(f"Will upload local input {name} at {path} for job {job.id}")
-
-    def _requestJSON(self, *args, **kwargs):
-        return self._requestJSONStatic(self.httpClient, *args, **kwargs)
-
-    def _checkJobOperationSuccess(self, job, result, success):
-        code, reason = int(result["status-code"]), result["reason"]
-        if code != success:
-            job.errors.append(ARCHTTPError(code, reason, f"{code} {reason}"))
-            return False
-        else:
-            return True
-
-    @classmethod
-    def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
-        headers["Accept"] = "application/json"
-        resp = httpClient.request(*args, headers=headers, **kwargs)
-        text = resp.read().decode()
-        return resp.status, text
-
-    @classmethod
-    def _loadJSON(cls, status, jsonData):
-        try:
-            return json.loads(jsonData)
-        except json.JSONDecodeError:
-            raise ARCHTTPError(status, jsonData, f"Invalid JSON data in successful response - {status} {jsonData}")
-
-    @classmethod
-    def _getAPIVersions(cls, httpClient, apiBase="/arex"):
-        status, jsonData = cls._requestJSONStatic(httpClient, "GET", f"{apiBase}/rest")
-        if status != 200:
-            raise ARCHTTPError(status, jsonData, f"Error getting ARC API versions - {status} {jsonData}")
-        return cls._loadJSON(status, jsonData)
-
-    @classmethod
-    def _downloadFile(cls, httpClient, url, path, blocksize=None):
-        if blocksize is None:
-            blocksize = HTTP_BUFFER_SIZE
-
-        resp = httpClient.request("GET", url)
-
-        if resp.status != 200:
-            text = resp.read().decode()
-            raise ARCHTTPError(resp.status, text, f"Error downloading URL {url} to {path}: {resp.status} {text}")
-
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            data = resp.read(blocksize)
-            while data:
-                f.write(data)
-                data = resp.read(blocksize)
-
-    @classmethod
-    def _uploadFile(cls, httpClient, url, path):
-        with open(path, "rb") as f:
-            resp = httpClient.request("PUT", url, data=f)
-            text = resp.read().decode()
-            if resp.status != 200:
-                raise ARCHTTPError(resp.status, text, f"Upload {path} to {url} failed: {resp.status} {text}")
-
-    @classmethod
-    def _downloadListing(cls, httpClient, url):
-        status, jsonData = cls._requestJSONStatic(httpClient, "GET", url)
-        if status != 200:
-            raise ARCHTTPError(status, jsonData, f"Error downloading listing {url}: {status} {jsonData}")
-        return cls._loadJSON(status, jsonData)
-
-    @classmethod
-    def _getListingTransfers(cls, job, endpoint, listing, path, cancelEvent, transferQueue):
+    def _createTransfersFromListing(self, job, listing, path, cancelEvent, transferQueue):
         if "file" in listing:
             # /rest/1.0 compatibility
             if not isinstance(listing["file"], list):
@@ -508,8 +482,8 @@ class ARCRest:
                     newpath = f"{path}/{f}"
                 else:  # if session root, slash needs to be skipped
                     newpath = f
-                if not cls._filterOutFile(job.downloadFiles, newpath):
-                    url = f"{endpoint}/jobs/{job.id}/session/{newpath}"
+                if not self._filterOutFile(job.downloadFiles, newpath):
+                    url = f"{self.apiPath}/jobs/{job.id}/session/{newpath}"
                     transferQueue.put(FileTransfer(job, url, newpath, cancelEvent, type="file"))
         if "dir" in listing:
             # /rest/1.0 compatibility
@@ -521,12 +495,46 @@ class ARCRest:
                     newpath = f"{path}/{d}"
                 else:  # if session root, slash needs to be skipped
                     newpath = d
-                if not cls._filterOutListing(job.downloadFiles, newpath):
-                    url = f"{endpoint}/jobs/{job.id}/session/{newpath}"
+                if not self._filterOutListing(job.downloadFiles, newpath):
+                    url = f"{self.apiPath}/jobs/{job.id}/session/{newpath}"
                     transferQueue.put(FileTransfer(job, url, newpath, cancelEvent, type="listing"))
 
+    def _filterOutFile(self, downloadFiles, filePath):
+        if not downloadFiles:
+            return False
+        for pattern in downloadFiles:
+            # direct match
+            if pattern == filePath:
+                return False
+            # recursive folder match
+            elif pattern.endswith("/") and filePath.startswith(pattern):
+                return False
+            # entire session directory, not matched by above if
+            elif pattern == "/":
+                return False
+        return True
+
+    def _filterOutListing(self, downloadFiles, listingPath):
+        if not downloadFiles:
+            return False
+        for pattern in downloadFiles:
+            # part of pattern
+            if pattern.startswith(listingPath):
+                return False
+            # recursive folder match
+            elif pattern.endswith("/") and listingPath.startswith(pattern):
+                return False
+        return True
+
     @classmethod
-    def _uploadTransferWorker(cls, httpClient, uploadQueue, logger=getNullLogger()):
+    def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
+        headers["Accept"] = "application/json"
+        resp = httpClient.request(*args, headers=headers, **kwargs)
+        text = resp.read().decode()
+        return resp.status, text
+
+    @classmethod
+    def _uploadTransferWorker(cls, restClient, uploadQueue, logger=getNullLogger()):
         while True:
             try:
                 upload = uploadQueue.get(block=False)
@@ -540,7 +548,7 @@ class ARCRest:
                 continue
 
             try:
-                cls._uploadFile(httpClient, upload.url, upload.path)
+                restClient.uploadFile(upload.url, upload.path)
             except Exception as exc:
                 upload.cancelEvent.set()
                 job.errors.append(exc)
@@ -550,11 +558,11 @@ class ARCRest:
                     logger.debug(f"Upload {upload.path} to {upload.url} for job {job.id} failed: {exc}")
 
     @classmethod
-    def _downloadTransferWorker(cls, httpClient, transferQueue, downloadDir, endpoint, logger=getNullLogger(), blocksize=None):
+    def _downloadTransferWorker(cls, restClient, transferQueue, downloadDir, logger=getNullLogger()):
         while True:
             try:
                 transfer = transferQueue.get()
-            except TransferQueueEmpty():
+            except TransferQueueEmpty:
                 break
 
             job = transfer.job
@@ -566,8 +574,11 @@ class ARCRest:
                 if transfer.type in ("file", "diagnose"):
                     # download file
                     path = f"{downloadDir}/{job.id}/{transfer.path}"
+                    # TODO: Python >= 3.7
+                    #blocksize = restClient.httpClient.conn.blocksize
+                    blocksize = None
                     try:
-                        cls._downloadFile(httpClient, transfer.url, path, blocksize=blocksize)
+                        restClient.downloadFile(transfer.url, path, blocksize=blocksize)
                     except Exception as exc:
                         error = exc
                         if isinstance(exc, ARCHTTPError):
@@ -588,7 +599,7 @@ class ARCRest:
                 elif transfer.type == "listing":
                     # download listing
                     try:
-                        listing = cls._downloadListing(httpClient, transfer.url)
+                        listing = restClient.downloadListing(transfer.url)
                     except ARCHTTPError as exc:
                         # work around for invalid output in ARC 6
                         if exc.text == "":
@@ -602,7 +613,9 @@ class ARCRest:
                         logger.debug(f"Download listing {transfer.url} for job {job.id} failed: {exc}")
                     else:
                         # create new transfer jobs
-                        cls._getListingTransfers(job, endpoint, listing, transfer.path, transfer.cancelEvent, transferQueue)
+                        restClient._createTransfersFromListing(
+                            job, listing, transfer.path, transfer.cancelEvent, transferQueue
+                        )
                         logger.debug(f"Download listing {transfer.url} for job {job.id} successful")
 
             # every possible exception needs to be handled, otherwise the
@@ -614,45 +627,44 @@ class ARCRest:
                 job.errors.append(Exception(excstr))
                 logger.debug(f"Download URL {transfer.url} and path {transfer.path} for job {job.id} failed: {excstr}")
 
-    @classmethod
-    def _filterOutFile(cls, downloadFiles, filePath):
-        if not downloadFiles:
-            return False
-        for pattern in downloadFiles:
-            # direct match
-            if pattern == filePath:
-                return False
-            # recursive folder match
-            elif pattern.endswith("/") and filePath.startswith(pattern):
-                return False
-            # entire session directory, not matched by above if
-            elif pattern == "/":
-                return False
-        return True
-
+    ### public static methods ###
 
     @classmethod
-    def _filterOutListing(cls, downloadFiles, listingPath):
-        if not downloadFiles:
-            return False
-        for pattern in downloadFiles:
-            # part of pattern
-            if pattern.startswith(listingPath):
-                return False
-            # recursive folder match
-            elif pattern.endswith("/") and listingPath.startswith(pattern):
-                return False
-        return True
+    def getAPIVersionsStatic(cls, httpClient, apiBase="/arex"):
+        status, text = cls._requestJSONStatic(httpClient, "GET", f"{apiBase}/rest")
+        if status != 200:
+            raise ARCHTTPError(status, text, f"Error getting ARC API versions: {status} {text}")
+        apiVersions = json.loads(text)
+
+        # /rest/1.0 compatibility
+        if not isinstance(apiVersions["version"], list):
+            return [apiVersions["version"]]
+        else:
+            return apiVersions["version"]
+
+    @classmethod
+    def getClient(cls, url=None, host=None, port=None, proxypath=None, logger=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex"):
+        httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, logger=logger, blocksize=blocksize, timeout=timeout)
+        apiVersions = cls.getAPIVersionsStatic(httpClient, apiBase=apiBase)
+        if not apiVersions:
+            raise ARCError("No supported API versions")
+
+        if version is not None:
+            if version not in apiVersions:
+                raise ARCError(f"API version {version} not among supported ones {apiVersions}")
+            apiVersion = version
+        else:
+            apiVersion = apiVersions[-1]
+
+        if apiVersion == "1.0":
+            return ARCRest_1_0(httpClient, apiBase=apiBase, logger=logger)
+        #elif apiVersion == "1.1":
+        #    return ARCRest_1_1(httpClient, apiBase=apiBase, logger=logger)
+        else:
+            raise ARCError(f"No client implementation for supported API version {apiVersion}")
 
 
 class ARCRest_1_0(ARCRest):
-
-    def __init__(self, httpClient, apiBase="/arex", logger=getNullLogger()):
-        super().__init__(httpClient, apiBase=apiBase, logger=logger)
-        self.apiPath = f"{apiBase}/rest/1.0"
-
-    def getAPIPath(self):
-        return self.apiPath
 
     def _findQueue(self, queue, ceInfo):
         compShares = ceInfo.get("Domains", {}) \
@@ -701,15 +713,12 @@ class ARCRest_1_0(ARCRest):
                 runtimes.append(envname)
         return runtimes
 
-    def submitJobs(self, queue, jobs, uploadData=True):
+    def createJobs(self, jobs, delegationID, queue):
         ceInfo = self.getCEInfo()
         queueInfo = self._findQueue(queue, ceInfo)
         if queueInfo is None:
             raise MatchmakingError(f"Requested queue {queue} does not exist")
         runtimes = self._findRuntimes(ceInfo)
-
-        # get delegation for proxy
-        delegationID = self.createDelegation()
 
         jobdescs = arc.JobDescriptionList()
         tosubmit = []  # sublist of jobs that will be submitted
@@ -731,7 +740,6 @@ class ARCRest_1_0(ARCRest):
             # - memory (xrsl): which value is it from info document?
             #   MaxVirtualMemory?
             # - disk: no relevant value found in info document
-            cpuTime = desc.Resources.TotalCPUTime.range.max
             wallTime = desc.Resources.TotalWallTime.range.max
             envs = [str(env) for env in desc.Resources.RunTimeEnvironment.getSoftwareList()]
             maxWallTime = int(queueInfo.get("MaxWallTime", sys.maxsize))
@@ -748,8 +756,8 @@ class ARCRest_1_0(ARCRest):
                 self.logger.debug(str(error))
                 continue
 
-            # add queue and delegation, modify description as necessary for
-            # ARC client
+            # add queue and delegation to job description, do client processing
+            # of job description
             desc.Resources.QueueName = queue
             desc.DataStaging.DelegationID = delegationID
             processJobDescription(desc)
@@ -781,15 +789,15 @@ class ARCRest_1_0(ARCRest):
             bulkdesc = f"<ActivityDescriptions>{bulkdesc}</ActivityDescriptions>"
 
         # submit jobs to ARC
-        status, jsonData = self._requestJSON(
+        status, text = self._requestJSON(
             "POST",
             f"{self.apiPath}/jobs?action=new",
             data=bulkdesc,
             headers={"Content-Type": "application/xml"},
         )
         if status != 201:
-            raise ARCHTTPError(status, jsonData, f"Error submitting jobs - {status} {jsonData}")
-        jsonData = self._loadJSON(status, jsonData)
+            raise ARCHTTPError(status, text, f"Error submitting jobs: {status} {text}")
+        jsonData = json.loads(text)
 
         # /rest/1.0 compatibility
         if isinstance(jsonData["job"], dict):
@@ -797,25 +805,13 @@ class ARCRest_1_0(ARCRest):
         else:
             results = jsonData["job"]
 
-        # process errors, prepare and upload files for a sublist of jobs
-        toupload = []
         for job, result in zip(tosubmit, results):
-            if self._checkJobOperationSuccess(job, result, 201):
+            code, reason = int(result["status-code"]), result["reason"]
+            if code != 201:
+                job.errors.append(ARCHTTPError(code, reason, f"Error submitting job {job.descstr}: {reason}"))
+            else:
                 job.id = result["id"]
                 job.state = result["state"]
-                toupload.append(job)
-        if uploadData:
-            self.uploadJobFiles(toupload)
-
-
-class ARCRest_1_1(ARCRest):
-
-    def __init__(self, httpClient, apiBase="/arex", logger=getNullLogger()):
-        super().__init__(httpClient, apiBase=apiBase, logger=logger)
-        self.apiPath = f"{apiBase}/rest/1.1"
-
-    def getAPIPath(self):
-        return self.apiPath
 
 
 class FileTransfer:
