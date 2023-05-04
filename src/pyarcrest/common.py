@@ -1,3 +1,6 @@
+import logging
+
+
 def getNullLogger():
     logger = logging.getLogger('null')
     if not logger.hasHandlers():
