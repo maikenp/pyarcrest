@@ -34,13 +34,17 @@ import threading
 from http.client import HTTPException
 from urllib.parse import urlparse
 
-from act.arc.httpclient import HTTP_BUFFER_SIZE, HTTPClient
-from act.arc.x509proxy import parsePEM, signRequest
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
 import arc
+from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
+                              DescriptionUnparseError, InputFileError,
+                              MatchmakingError, MissingDiagnoseFile,
+                              MissingOutputFile, NoValueInARCResult)
+from pyarcrest.http import HTTPClient
+from pyarcrest.x509 import parsePEM, signRequest
 
 
 def getNullLogger():
@@ -1143,68 +1147,3 @@ def processJobDescription(jobdesc):
 
 class TransferQueueEmpty(Exception):
     pass
-
-
-class ARCError(Exception):
-
-    def __init__(self, msg=""):
-        self.msg = msg
-
-    def __str__(self):
-        return self.msg
-
-
-class ARCHTTPError(ARCError):
-    """ARC REST HTTP status error."""
-
-    def __init__(self, status, text, msg=""):
-        super().__init__(msg)
-        self.status = status
-        self.text = text
-
-
-class DescriptionParseError(ARCError):
-    pass
-
-
-class DescriptionUnparseError(ARCError):
-    pass
-
-
-class InputFileError(ARCError):
-    pass
-
-
-class NoValueInARCResult(ARCError):
-    pass
-
-class MatchmakingError(ARCError):
-    pass
-
-
-class MissingResultFile(ARCError):
-
-    def __init__(self, filename):
-        self.filename = filename
-        super().__init__(str(self))
-
-    def __str__(self):
-        return f"Missing result file {self.filename}"
-
-
-class MissingOutputFile(MissingResultFile):
-
-    def __init__(self, filename):
-        super().__init__(filename)
-
-    def __str__(self):
-        return f"Missing output file {self.filename}"
-
-
-class MissingDiagnoseFile(MissingResultFile):
-
-    def __init__(self, filename):
-        super().__init__(filename)
-
-    def __str__(self):
-        return f"Missing diagnose file {self.filename}"

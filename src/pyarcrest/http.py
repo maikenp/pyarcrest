@@ -4,6 +4,8 @@ import ssl
 from http.client import HTTPConnection, HTTPSConnection, RemoteDisconnected
 from urllib.parse import urlencode, urlparse
 
+from pyarcrest.errors import HTTPClientError
+
 HTTP_BUFFER_SIZE = 2**23
 
 
@@ -114,7 +116,3 @@ class HTTPClient:
     def close(self):
         """Close connection."""
         self.conn.close()
-
-
-class HTTPClientError(Exception):
-    pass

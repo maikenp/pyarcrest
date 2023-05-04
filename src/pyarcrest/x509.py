@@ -7,6 +7,8 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 
+from pyarcrest.errors import X509Error
+
 PROXYPATH = f"/tmp/x509up_u{os.getuid()}"
 
 
@@ -29,9 +31,9 @@ def createProxyCSR(issuerCert, proxyKey):
     """Create proxy certificate signing request."""
 
     if isOldProxy(issuerCert):
-        raise Exception("Proxy format not supported")
+        raise X509Error("Proxy format not supported")
     if not validKeyUsage(issuerCert):
-        raise Exception("Proxy uses invalid keyUsage extension")
+        raise X509Error("Proxy uses invalid keyUsage extension")
 
     builder = x509.CertificateSigningRequestBuilder()
 
@@ -67,14 +69,14 @@ def signRequest(csr, proxypath=PROXYPATH, lifetime=None):
     """Sign proxy CSR."""
     now = datetime.utcnow()
     if not csr.is_signature_valid:
-        raise Exception("Invalid request signature")
+        raise X509Error("Invalid request signature")
 
     with open(proxypath, "rb") as f:
         proxy_pem = f.read()
 
     proxy = x509.load_pem_x509_certificate(proxy_pem, default_backend())
     if not checkRFCProxy(proxy):
-        raise Exception("Invalid RFC proxy")
+        raise X509Error("Invalid RFC proxy")
 
     key = serialization.load_pem_private_key(proxy_pem, password=None, backend=default_backend())
     keyID = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
@@ -136,7 +138,7 @@ def parsePEM(pem):
         keyPEM = sections[1]
         chainPEMs = sections[2:]
     except IndexError:
-        raise Exception("Invalid PEM")
+        raise X509Error("Invalid PEM")
 
     try:
         cert = x509.load_pem_x509_certificate(
@@ -155,7 +157,7 @@ def parsePEM(pem):
             )
         chain = "\n".join(chainPEMs)
     except ValueError:
-        raise Exception("Cannot decode PEM")
+        raise X509Error("Cannot decode PEM")
 
     # return loaded cryptography objects and the issuer chain
     return cert, key, chain
