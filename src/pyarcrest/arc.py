@@ -891,7 +891,6 @@ class ARCJob:
         self.name = None
         self.delegid = None
         self.state = None
-        self.tstate = None
         self.cancelEvent = None
         self.errors = []
         self.downloadFiles = []
