@@ -221,7 +221,7 @@ class ARCRest:
         url = f"{self.apiPath}/delegations/{delegationID}?action=renew"
         resp = self.httpClient.request("POST", url)
         respstr = resp.read().decode()
-        if resp.status != 200:
+        if resp.status != 201:
             raise ARCHTTPError(resp.status, respstr, f"Cannot renew delegation {delegationID}: {resp.status} {respstr}")
         return respstr
 
