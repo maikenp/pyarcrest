@@ -132,7 +132,7 @@ class ARCRest:
         results = self._manageJobs(jobs, "delegations")
         for job, result in zip(jobs, results):
             code, reason = int(result["status-code"]), result["reason"]
-            if code != 202:
+            if code != 200:
                 job.errors.append(ARCHTTPError(code, reason, f"Error getting delegations for job {job.id}: {code} {reason}"))
             elif "delegation_id" not in result:
                 job.errors.append(NoValueInARCResult("No delegation ID in successful response"))
