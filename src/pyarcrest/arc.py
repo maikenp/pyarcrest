@@ -132,8 +132,8 @@ class ARCRest:
         httpClients = []
         for i in range(numWorkers):
             httpClients.append(HTTPClient(
-                host=self.httpClient.host,
-                port=self.httpClient.port,
+                host=self.httpClient.conn.host,
+                port=self.httpClient.conn.port,
                 isHTTPS=True,
                 proxypath=self.httpClient.proxypath,
                 logger=self.logger
@@ -268,8 +268,8 @@ class ARCRest:
         httpClients = []
         for i in range(workers):
             httpClients.append(HTTPClient(
-                host=self.httpClient.host,
-                port=self.httpClient.port,
+                host=self.httpClient.conn.host,
+                port=self.httpClient.conn.port,
                 isHTTPS=True,
                 proxypath=self.httpClient.proxypath,
                 logger=self.logger

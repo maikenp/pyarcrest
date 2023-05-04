@@ -16,30 +16,22 @@ class HTTPClient:
 
         if url:
             parts = urlparse(url)
-
             if parts.scheme == "https":
                 useHTTPS = True
             elif parts.scheme == "http":
                 useHTTPS = False
             else:
                 raise HTTPClientError("URL scheme not HTTP(S)")
-
-            self.host = parts.hostname
-            if self.host is None:
+            host = parts.hostname
+            if host is None:
                 raise HTTPClientError("No hostname in URL")
-
-            self.port = parts.port
+            port = parts.port
 
         else:
-            self.host = host
-            if self.host is None:
+            if host is None:
                 raise HTTPClientError("No hostname parameter")
-
             useHTTPS = isHTTPS
-            self.port = port
-
-        if self.host is None:
-            raise HTTPClientError("No hostname given")
+            port = port
 
         if proxypath is not None:
             if not useHTTPS:
@@ -57,13 +49,13 @@ class HTTPClient:
             kwargs["timeout"] = timeout
 
         if useHTTPS:
-            if not self.port:
-                self.port = 443
-            self.conn = HTTPSConnection(self.host, port=self.port, context=context, **kwargs)
+            if not port:
+                port = 443
+            self.conn = HTTPSConnection(host, port=port, context=context, **kwargs)
         else:
-            if not self.port:
-                self.port = 80
-            self.conn = HTTPConnection(self.host, port=self.port, **kwargs)
+            if not port:
+                port = 80
+            self.conn = HTTPConnection(host, port=port, **kwargs)
 
         self.isHTTPS = useHTTPS
         self.proxypath = proxypath
