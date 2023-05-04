@@ -2,9 +2,8 @@ import argparse
 import json
 import os
 import pathlib
-import ssl
-from http.client import HTTPSConnection
-from urllib.parse import urlparse
+
+from pyarcrest.arc import ARCJob, ARCRest
 
 PROXYPATH = f"/tmp/x509up_u{os.getuid()}"
 
@@ -51,91 +50,64 @@ def main():
         help="submit given job descriptions",
     )
     jobs_submit_parser.add_argument("jobdescs", type=pathlib.Path, nargs='+', help="job descs to submit")
+    jobs_submit_parser.add_argument("--queue", type=str, help="queue to submit to")
 
     args = parser.parse_args()
 
-    url = urlparse(args.cluster)
-
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS)
-    context.load_cert_chain(args.proxy, keyfile=args.proxy)
-    conn = HTTPSConnection(url.netloc, context=context, timeout=60)
+    arcrest = ARCRest.getClient(url=args.cluster, proxypath=args.proxy)
 
     if args.command == "jobs" and args.jobs == "list":
-        conn.request("GET", "/arex/rest/1.0/jobs", headers={"Accept": "application/json"})
-        resp = conn.getresponse()
-        respstr = resp.read().decode()
-        if resp.status != 200:
-            print(f"ARC jobs list error: {resp.status} {respstr}")
+        status, text = arcrest._requestJSON("GET", f"{arcrest.apiPath}/jobs")
+        if status != 200:
+            print(f"ARC jobs list error: {status} {text}")
         else:
-            print(json.dumps(json.loads(respstr), indent=4))
+            try:
+                print(json.dumps(json.loads(text), indent=4))
+            except json.JSONDecodeError as exc:
+                if exc.doc != "":
+                    raise
 
-    elif args.command == "jobs" and args.jobs == "info":
+    elif args.command == "jobs" and args.jobs in ("info", "clean"):
         tomanage = [{"id": arcid} for arcid in args.jobids]
+        if not tomanage:
+            return
+
         jsonData = {}
         if len(tomanage) == 1:
             jsonData["job"] = tomanage[0]
         else:
             jsonData["job"] = tomanage
-        conn.request(
-            "POST",
-            "/arex/rest/1.0/jobs?action=info",
-            body=json.dumps(jsonData).encode(),
-            headers={"Accept": "application/json", "Content-type": "application/json"}
-        )
-        resp = conn.getresponse()
-        respstr = resp.read().decode()
-        if resp.status != 201:
-            print(f"ARC jobs info error: {resp.status} {respstr}")
-        else:
-            print(json.dumps(json.loads(respstr), indent=4))
 
-    elif args.command == "jobs" and args.jobs == "clean":
-        tomanage = [{"id": arcid} for arcid in args.jobids]
-        jsonData = {}
-        if len(tomanage) == 1:
-            jsonData["job"] = tomanage[0]
-        else:
-            jsonData["job"] = tomanage
-        conn.request(
+        status, text = arcrest._requestJSON(
             "POST",
-            "/arex/rest/1.0/jobs?action=clean",
-            body=json.dumps(jsonData).encode(),
-            headers={"Accept": "application/json", "Content-type": "application/json"}
+            f"{arcrest.apiPath}/jobs?action={args.jobs}",
+            data=json.dumps(jsonData).encode(),
+            headers={"Content-type": "application/json"},
         )
-        resp = conn.getresponse()
-        respstr = resp.read().decode()
-        if resp.status != 201:
-            print(f"ARC jobs info error: {resp.status} {respstr}")
+        if status != 201:
+            print(f"ARC jobs operation error: {status} {text}")
         else:
-            print(json.dumps(json.loads(respstr), indent=4))
+            print(json.dumps(json.loads(text), indent=4))
 
     elif args.command == "jobs" and args.jobs == "submit":
-        from pyarcrest.arc import ARCJob, ARCRest
         jobs = []
         for desc in args.jobdescs:
             with desc.open() as f:
                 jobs.append(ARCJob(descstr=f.read()))
-        arcrest = ARCRest(args.cluster, proxypath=args.proxy)
-        queue = url.path.split("/")[-1]
-        arcrest.submitJobs(queue, jobs)
+        arcrest.submitJobs(args.queue, jobs)
         for job in jobs:
             print(job.id)
 
     elif args.command == "version":
-        conn.request(
-            "GET",
-            "/arex/rest",
-            headers={"Accept": "application/json"},
-        )
-        resp = conn.getresponse()
-        print(json.dumps(json.loads(resp.read().decode()), indent=4))
+        status, text = arcrest._requestJSON("GET", f"{arcrest.apiBase}/rest")
+        if status != 200:
+            print(f"ARC CE REST API versions error: {status} {text}")
+        else:
+            print(json.dumps(json.loads(text), indent=4))
 
     elif args.command == "info":
-        conn.request(
-            "GET",
-            "/arex/rest/1.0/info",
-            headers={"Accept": "application/json"},
-        )
-        resp = conn.getresponse()
-        print(f"resp.status: {resp.status}")
-        print(json.dumps(json.loads(resp.read().decode()), indent=4))
+        status, text = arcrest._requestJSON("GET", f"{arcrest.apiPath}/info")
+        if status != 200:
+            print(f"ARC CE info error: {status} {text}")
+        else:
+            print(json.dumps(json.loads(text), indent=4))
