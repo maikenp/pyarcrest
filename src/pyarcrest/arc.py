@@ -781,7 +781,6 @@ class ARCRest_1_0(ARCRest):
 
             # read name from description
             job.name = desc.Identification.JobName
-            self.logger.debug(f"Job name from description: {job.name}")
 
             # unparse modified description, remove xml version node because it
             # is not accepted by ARC CE, add to bulk description
@@ -886,7 +885,6 @@ class ARCRest_1_1(ARCRest):
 
             # read name from description
             job.name = desc.Identification.JobName
-            self.logger.debug(f"Job name from description: {job.name}")
 
             # unparse modified description, remove xml version node because it
             # is not accepted by ARC CE, add to bulk description
