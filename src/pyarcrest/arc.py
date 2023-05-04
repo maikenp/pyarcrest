@@ -26,7 +26,6 @@ However, the basic use of the base class public API should be simple.
 import concurrent.futures
 import datetime
 import json
-import logging
 import os
 import queue
 import sys
@@ -39,19 +38,13 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
 import arc
+from pyarcrest.common import getNullLogger
 from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
                               DescriptionUnparseError, InputFileError,
                               MatchmakingError, MissingDiagnoseFile,
                               MissingOutputFile, NoValueInARCResult)
 from pyarcrest.http import HTTPClient
 from pyarcrest.x509 import parsePEM, signRequest
-
-
-def getNullLogger():
-    logger = logging.getLogger('null')
-    if not logger.hasHandlers():
-        logger.addHandler(logging.NullHandler())
-    return logger
 
 
 class ARCRest:
