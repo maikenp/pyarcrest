@@ -8,18 +8,10 @@ interface specification: https://www.nordugrid.org/arc/arc6/tech/rest/rest.html
 Additionally, the base class defines some higher level methods, e. g. a method
 to upload job input files using multiple threads.
 
-Some operations are implemented in class methods rather than regular instance
-methods. Such operations are used to determine the API version or for threaded
-contexts where internal state cannot be used (e. g. the http client).
-
-The documentation of non instance methods should be carefully considered when
-developing with them. None of the methods are static for the possible use case
-of child classes overriding them and depending on other overriden class
-behaviours. E. g. ARCRest._downloadFile() and ARCRest._uploadFile() do not
-depend on any other class behaviour but their overrides could, like
-ARCRest._downloadListing() does.
-
-However, the basic use of the base class public API should be simple.
+Some operations involved in determining the API version are implemented in class
+methods instead of instance methods as instance methods are considered to be
+tied to the API version. Determination of API version should therefore be a
+static operation.
 """
 
 
