@@ -259,6 +259,7 @@ class ARCRest:
                 blocksize=blocksize,
                 timeout=timeout,
                 apiBase=self.apiBase,
+                version=self.version,
             ))
         self.logger.debug(f"Created {len(restClients)} upload workers")
 
@@ -305,6 +306,7 @@ class ARCRest:
                 blocksize=blocksize,
                 timeout=timeout,
                 apiBase=self.apiBase,
+                version=self.version,
             ))
 
         self.logger.debug(f"Created {len(restClients)} download workers")
@@ -657,6 +659,10 @@ class ARCRest:
 
 
 class ARCRest_1_0(ARCRest):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.version = "1.0"
 
     def _findQueue(self, queue, ceInfo):
         compShares = ceInfo.get("Domains", {}) \
