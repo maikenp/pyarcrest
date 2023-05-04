@@ -105,24 +105,14 @@ class ARCRest:
 
     # TODO: blocksize is only added in python 3.7!!!!!!!
     # TODO: hardcoded number of upload workers
-    def uploadJobFiles(self, jobs, workers=10, blocksize=None):
-        # create transfer queues
+    def uploadJobFiles(self, jobs, workers=10, blocksize=None, timeout=None):
+        # create upload queue
         uploadQueue = queue.Queue()
-        resultQueue = queue.Queue()
-
-        # put uploads to queue, create cancel events for jobs
-        jobsdict = {}
         for job in jobs:
-            uploads = self._getInputUploads(job)
+            self._getInputTransfers(job, uploadQueue)
             if job.errors:
                 self.logger.debug(f"Skipping job {job.id} due to input file errors")
                 continue
-
-            jobsdict[job.id] = job
-            job.cancelEvent = threading.Event()
-
-            for upload in uploads:
-                uploadQueue.put(upload)
         if uploadQueue.empty():
             self.logger.debug("No local inputs to upload")
             return
@@ -138,20 +128,18 @@ class ARCRest:
                 proxypath=self.httpClient.proxypath,
                 logger=self.logger,
                 blocksize=blocksize,
+                timeout=timeout,
             ))
-
         self.logger.debug(f"Created {len(httpClients)} upload workers")
 
-        # run upload threads on uploads
+        # run upload threads on upload queue
         with concurrent.futures.ThreadPoolExecutor(max_workers=numWorkers) as pool:
             futures = []
             for httpClient in httpClients:
                 futures.append(pool.submit(
                     self._uploadTransferWorker,
                     httpClient,
-                    jobsdict,
                     uploadQueue,
-                    resultQueue,
                     logger=self.logger,
                 ))
             concurrent.futures.wait(futures)
@@ -159,13 +147,6 @@ class ARCRest:
         # close HTTP clients
         for httpClient in httpClients:
             httpClient.close()
-
-        # put error messages to job dicts
-        while not resultQueue.empty():
-            result = resultQueue.get()
-            resultQueue.task_done()
-            job = jobsdict[result["jobid"]]
-            job.errors.append(result["error"])
 
     def getJobsInfo(self, jobs):
         results = self._manageJobs(jobs, "info")
@@ -243,27 +224,20 @@ class ARCRest:
 
     # TODO: blocksize is only added in python 3.7!!!!!!!
     # TODO: hardcoded workers
-    def downloadJobFiles(self, downloadDir, jobs, workers=10, blocksize=None):
+    def downloadJobFiles(self, downloadDir, jobs, workers=10, blocksize=None, timeout=None):
         transferQueue = TransferQueue(workers)
-        resultQueue = queue.Queue()
 
-        jobsdict = {}
         for job in jobs:
-            jobsdict[job.id] = job
-            job.cancelEvent = threading.Event()
+            cancelEvent = threading.Event()
 
             # Add diagnose files to transfer queue and remove them from
             # downloadfiles string. Replace download files with a list of
             # remaining download patterns.
-            self._processDiagnoseDownloads(job, transferQueue)
+            self._getDiagnoseTransfers(job, transferQueue, cancelEvent)
 
             # add job session directory as a listing transfer
-            transferQueue.put({
-                "jobid": job.id,
-                "url": f"{self.apiPath}/jobs/{job.id}/session",
-                "path": "",
-                "type": "listing"
-            })
+            url = f"{self.apiPath}/jobs/{job.id}/session"
+            transferQueue.put(FileTransfer(job, url, "", cancelEvent=cancelEvent, type="listing"))
 
         # open connections for thread workers
         httpClients = []
@@ -275,6 +249,7 @@ class ARCRest:
                 proxypath=self.httpClient.proxypath,
                 logger=self.logger,
                 blocksize=blocksize,
+                timeout=timeout,
             ))
 
         self.logger.debug(f"Created {len(httpClients)} download workers")
@@ -286,9 +261,7 @@ class ARCRest:
                     self._downloadTransferWorker,
                     httpClient,
                     transferQueue,
-                    resultQueue,
                     downloadDir,
-                    jobsdict,
                     self.apiPath,
                     logger=self.logger,
                     blocksize=blocksize,
@@ -298,12 +271,7 @@ class ARCRest:
         for httpClient in httpClients:
             httpClient.close()
 
-        while not resultQueue.empty():
-            result = resultQueue.get()
-            jobsdict[result["jobid"]].errors.append(result["error"])
-            resultQueue.task_done()
-
-    def _processDiagnoseDownloads(self, job, transferQueue):
+    def _getDiagnoseTransfers(self, job, transferQueue, cancelEvent):
         DIAG_FILES = [
             "failed", "local", "errors", "description", "diag", "comment",
             "status", "acl", "xml", "input", "output", "input_status",
@@ -312,7 +280,6 @@ class ARCRest:
 
         if not job.downloadFiles:
             self.logger.debug(f"No files to download for job {job.id}")
-            return []
 
         # add all diagnose files to transfer queue and create
         # a list of download patterns
@@ -335,7 +302,7 @@ class ARCRest:
                 else:
                     diagFile = diagnose.split("/")[-1]
                     if diagFile not in DIAG_FILES:
-                        self.logger.debug(f"Skipping download {download} for because of unknown diagnose file {diagFile}")
+                        self.logger.debug(f"Skipping download {download} because of unknown diagnose file {diagFile}")
                         continue  # error?
                     self.logger.debug(f"Will download diagnose file {diagFile} to {download}")
                     diagFiles.add(diagnose)
@@ -345,13 +312,8 @@ class ARCRest:
 
         for diagFile in diagFiles:
             diagName = diagFile.split("/")[-1]
-            transferQueue.put({
-                "jobid": job.id,
-                "url": f"{self.apiPath}/jobs/{job.id}/diagnose/{diagName}",
-                "path": diagFile,
-                "type": "diagnose"
-            })
-
+            url = f"{self.apiPath}/jobs/{job.id}/diagnose/{diagName}"
+            transferQueue.put(FileTransfer(job, url, diagFile, cancelEvent=cancelEvent, type="diagnose"))
         job.downloadFiles = newDownloads
 
     def _POSTNewDelegation(self):
@@ -446,8 +408,8 @@ class ARCRest:
         else:
             return jsonData["job"]
 
-    def _getInputUploads(self, job):
-        uploads = []
+    def _getInputTransfers(self, job, uploadQueue):
+        cancelEvent = threading.Event()
         for name, source in job.inputFiles.items():
             try:
                 path = isLocalInputFile(name, source)
@@ -465,14 +427,9 @@ class ARCRest:
                 self.logger.debug(msg)
                 continue
 
-            uploads.append({
-                "jobid": job.id,
-                "url": f"{self.apiPath}/jobs/{job.id}/session/{name}",
-                "path": path
-            })
+            url = f"{self.apiPath}/jobs/{job.id}/session/{name}"
+            uploadQueue.put(FileTransfer(job, url, path, cancelEvent=cancelEvent))
             self.logger.debug(f"Will upload local input {name} at {path} for job {job.id}")
-
-        return uploads
 
     def _requestJSON(self, *args, **kwargs):
         return self._requestJSONStatic(self.httpClient, *args, **kwargs)
@@ -540,44 +497,36 @@ class ARCRest:
         return cls._loadJSON(status, jsonData)
 
     @classmethod
-    def _createTransfersFromListing(cls, downloadFiles, endpoint, listing, path, jobid):
-        transfers = []
+    def _getListingTransfers(cls, job, endpoint, listing, path, cancelEvent, transferQueue):
         if "file" in listing:
             # /rest/1.0 compatibility
             if not isinstance(listing["file"], list):
                 listing["file"] = [listing["file"]]
+
             for f in listing["file"]:
                 if path:
                     newpath = f"{path}/{f}"
                 else:  # if session root, slash needs to be skipped
                     newpath = f
-                if not cls._filterOutFile(downloadFiles, newpath):
-                    transfers.append({
-                        "jobid": jobid,
-                        "type": "file",
-                        "path": newpath,
-                        "url": f"{endpoint}/jobs/{jobid}/session/{newpath}"
-                    })
+                if not cls._filterOutFile(job.downloadFiles, newpath):
+                    url = f"{endpoint}/jobs/{job.id}/session/{newpath}"
+                    transferQueue.put(FileTransfer(job, url, newpath, cancelEvent, type="file"))
         if "dir" in listing:
             # /rest/1.0 compatibility
             if not isinstance(listing["dir"], list):
                 listing["dir"] = [listing["dir"]]
+
             for d in listing["dir"]:
                 if path:
                     newpath = f"{path}/{d}"
                 else:  # if session root, slash needs to be skipped
                     newpath = d
-                if not cls._filterOutListing(downloadFiles, newpath):
-                    transfers.append({
-                        "jobid": jobid,
-                        "type": "listing",
-                        "path": newpath,
-                        "url": f"{endpoint}/jobs/{jobid}/session/{newpath}"
-                    })
-        return transfers
+                if not cls._filterOutListing(job.downloadFiles, newpath):
+                    url = f"{endpoint}/jobs/{job.id}/session/{newpath}"
+                    transferQueue.put(FileTransfer(job, url, newpath, cancelEvent, type="listing"))
 
     @classmethod
-    def _uploadTransferWorker(cls, httpClient, jobsdict, uploadQueue, resultQueue, logger=getNullLogger()):
+    def _uploadTransferWorker(cls, httpClient, uploadQueue, logger=getNullLogger()):
         while True:
             try:
                 upload = uploadQueue.get(block=False)
@@ -585,99 +534,85 @@ class ARCRest:
                 break
             uploadQueue.task_done()
 
-            job = jobsdict[upload["jobid"]]
-            if job.cancelEvent.is_set():
-                logger.debug(f"Skipping upload for cancelled job {upload['jobid']}")
+            job = upload.job
+            if upload.cancelEvent.is_set():
+                logger.debug(f"Skipping upload for cancelled job {job.id}")
                 continue
 
             try:
-                cls._uploadFile(httpClient, upload["url"], upload["path"])
+                cls._uploadFile(httpClient, upload.url, upload.path)
             except Exception as exc:
-                job.cancelEvent.set()
-                resultQueue.put({
-                    "jobid": upload["jobid"],
-                    "error": exc,
-                })
+                upload.cancelEvent.set()
+                job.errors.append(exc)
                 if isinstance(exc, ARCHTTPError):
                     logger.debug(str(exc))
                 else:
-                    logger.debug(f"Upload {upload['path']} to {upload['url']} for job {upload['jobid']} failed: {exc}")
+                    logger.debug(f"Upload {upload.path} to {upload.url} for job {job.id} failed: {exc}")
 
     @classmethod
-    def _downloadTransferWorker(cls, httpClient, transferQueue, resultQueue, downloadDir, jobsdict, endpoint, logger=getNullLogger(), blocksize=None):
+    def _downloadTransferWorker(cls, httpClient, transferQueue, downloadDir, endpoint, logger=getNullLogger(), blocksize=None):
         while True:
             try:
                 transfer = transferQueue.get()
             except TransferQueueEmpty():
                 break
 
-            job = jobsdict[transfer["jobid"]]
-            if job.cancelEvent.is_set():
-                logger.debug(f"Skipping download for cancelled job {transfer['jobid']}")
+            job = transfer.job
+            if transfer.cancelEvent.is_set():
+                logger.debug(f"Skipping download for cancelled job {job.id}")
                 continue
 
             try:
-                if transfer["type"] in ("file", "diagnose"):
+                if transfer.type in ("file", "diagnose"):
                     # download file
-                    path = f"{downloadDir}/{transfer['jobid']}/{transfer['path']}"
+                    path = f"{downloadDir}/{job.id}/{transfer.path}"
                     try:
-                        cls._downloadFile(httpClient, transfer["url"], path, blocksize=blocksize)
+                        cls._downloadFile(httpClient, transfer.url, path, blocksize=blocksize)
                     except Exception as exc:
                         error = exc
                         if isinstance(exc, ARCHTTPError):
                             if exc.status == 404:
-                                if transfer["type"] == "diagnose":
-                                    error = MissingDiagnoseFile(transfer["url"])
+                                if transfer.type == "diagnose":
+                                    error = MissingDiagnoseFile(transfer.url)
                                 else:
-                                    error = MissingOutputFile(transfer["url"])
+                                    error = MissingOutputFile(transfer.url)
                         else:
-                            job.cancelEvent.set()
+                            transfer.cancelEvent.set()
+                        job.errors.append(error)
 
-                        resultQueue.put({
-                            "jobid": transfer["jobid"],
-                            "error": error
-                        })
-                        logger.debug(f"Download {transfer['url']} to {path} for job {transfer['jobid']} failed: {error}")
+                        logger.debug(f"Download {transfer.url} to {path} for job {job.id} failed: {error}")
+
                     else:
-                        logger.debug(f"Download {transfer['url']} to {path} for job {transfer['jobid']} successful")
+                        logger.debug(f"Download {transfer.url} to {path} for job {job.id} successful")
 
-                elif transfer["type"] == "listing":
+                elif transfer.type == "listing":
                     # download listing
                     try:
-                        listing = cls._downloadListing(httpClient, transfer["url"])
+                        listing = cls._downloadListing(httpClient, transfer.url)
                     except ARCHTTPError as exc:
+                        # work around for invalid output in ARC 6
                         if exc.text == "":
                             listing = {}
                         else:
                             raise
                     except Exception as exc:
                         if not isinstance(exc, ARCHTTPError):
-                            job.cancelEvent.set()
-                        resultQueue.put({
-                            "jobid": transfer["jobid"],
-                            "error": exc
-                        })
-                        logger.debug(f"Download listing {transfer['url']} for job {transfer['jobid']} failed: {exc}")
+                            transfer.cancelEvent.set()
+                        job.errors.append(exc)
+                        logger.debug(f"Download listing {transfer.url} for job {job.id} failed: {exc}")
                     else:
                         # create new transfer jobs
-                        transfers = cls._createTransfersFromListing(
-                            job.downloadFiles, endpoint, listing, transfer["path"], transfer["jobid"]
-                        )
-                        for transfer in transfers:
-                            transferQueue.put(transfer)
-                        logger.debug(f"Download listing {transfer['url']} for job {transfer['jobid']} successful: {listing}")
+                        cls._getListingTransfers(job, endpoint, listing, transfer.path, transfer.cancelEvent, transferQueue)
+                        logger.debug(f"Download listing {transfer.url} for job {job.id} successful")
 
             # every possible exception needs to be handled, otherwise the
             # threads will lock up
             except:
                 import traceback
                 excstr = traceback.format_exc()
-                job.cancelEvent.set()
-                resultQueue.put({
-                    "jobid": transfer["jobid"],
-                    "error": excstr
-                })
-                logger.debug(f"Download URL {transfer['url']} and path {transfer['path']} for job {transfer['jobid']} failed: {excstr}")
+                transfer.cancelEvent.set()
+                job.errors.append(Exception(excstr))
+                logger.debug(f"Download URL {transfer.url} and path {transfer.path} for job {job.id} failed: {excstr}")
 
     @classmethod
     def _filterOutFile(cls, downloadFiles, filePath):
@@ -883,6 +818,18 @@ class ARCRest_1_1(ARCRest):
         return self.apiPath
 
 
+class FileTransfer:
+
+    def __init__(self, job, url, path, cancelEvent=None, type=None):
+        self.job = job
+        self.url = url
+        self.path = path
+        self.cancelEvent = cancelEvent
+        if self.cancelEvent is None:
+            self.cancelEvent = threading.Event()
+        self.type = type
+
+
 class ARCJob:
 
     def __init__(self, id=None, descstr=None):
@@ -891,7 +838,6 @@ class ARCJob:
         self.name = None
         self.delegid = None
         self.state = None
-        self.cancelEvent = None
         self.errors = []
         self.downloadFiles = []
         self.inputFiles = {}
