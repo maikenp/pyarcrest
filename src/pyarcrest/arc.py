@@ -520,6 +520,53 @@ class ARCRest:
                 return False
         return True
 
+    def _findQueue(self, queue, ceInfo):
+        compShares = ceInfo.get("Domains", {}) \
+                           .get("AdminDomain", {}) \
+                           .get("Services", {}) \
+                           .get("ComputingService", {}) \
+                           .get("ComputingShare", [])
+        if not compShares:
+            raise ARCError("No queues found on cluster")
+
+        # /rest/1.0 compatibility
+        if isinstance(compShares, dict):
+            compShares = [compShares]
+
+        for compShare in compShares:
+            if compShare.get("Name", None) == queue:
+                # Queues are defined as ComputingShares. There are some shares
+                # that are mapped to another share. Such a share is never a
+                # queue externally. So if the name of the such share is used as
+                # a queue, the result has to be empty.
+                if "MappingPolicy" in compShare:
+                    return None
+                else:
+                    return compShare
+        return None
+
+    def _findRuntimes(self, ceInfo):
+        appenvs = ceInfo.get("Domains", {}) \
+                        .get("AdminDomain", {}) \
+                        .get("Services", {}) \
+                        .get("ComputingService", {}) \
+                        .get("ComputingManager", {}) \
+                        .get("ApplicationEnvironments", {}) \
+                        .get("ApplicationEnvironment", [])
+
+        # /rest/1.0 compatibility
+        if isinstance(appenvs, dict):
+            appenvs = [appenvs]
+
+        runtimes = []
+        for env in appenvs:
+            if "AppName" in env:
+                envname = env["AppName"]
+                if "AppVersion" in env:
+                    envname += f"-{env['AppVersion']}"
+                runtimes.append(envname)
+        return runtimes
+
     @classmethod
     def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
         headers["Accept"] = "application/json"
@@ -670,53 +717,6 @@ class ARCRest_1_0(ARCRest):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.version = "1.0"
-
-    def _findQueue(self, queue, ceInfo):
-        compShares = ceInfo.get("Domains", {}) \
-                           .get("AdminDomain", {}) \
-                           .get("Services", {}) \
-                           .get("ComputingService", {}) \
-                           .get("ComputingShare", [])
-        if not compShares:
-            raise ARCError("No queues found on cluster")
-
-        # /rest/1.0 compatibility
-        if isinstance(compShares, dict):
-            compShares = [compShares]
-
-        for compShare in compShares:
-            if compShare.get("Name", None) == queue:
-                # Queues are defined as ComputingShares. There are some shares
-                # that are mapped to another share. Such a share is never a
-                # queue externally. So if the name of the such share is used as
-                # a queue, the result has to be empty.
-                if "MappingPolicy" in compShare:
-                    return None
-                else:
-                    return compShare
-        return None
-
-    def _findRuntimes(self, ceInfo):
-        appenvs = ceInfo.get("Domains", {}) \
-                        .get("AdminDomain", {}) \
-                        .get("Services", {}) \
-                        .get("ComputingService", {}) \
-                        .get("ComputingManager", {}) \
-                        .get("ApplicationEnvironments", {}) \
-                        .get("ApplicationEnvironment", [])
-
-        # /rest/1.0 compatibility
-        if isinstance(appenvs, dict):
-            appenvs = [appenvs]
-
-        runtimes = []
-        for env in appenvs:
-            if "AppName" in env:
-                envname = env["AppName"]
-                if "AppVersion" in env:
-                    envname += f"-{env['AppVersion']}"
-                runtimes.append(envname)
-        return runtimes
 
     def createJobs(self, jobs, delegationID, queue):
         ceInfo = self.getCEInfo()
