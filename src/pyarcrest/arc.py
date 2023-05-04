@@ -1,5 +1,5 @@
 """
-Library for interaction with the ARC CE REST interface.
+Module for interaction with the ARC CE REST interface.
 
 Automatic support for multiple versions of the API is implemented with optional
 manual selection of the API version. This is done by defining a base class with
@@ -50,39 +50,6 @@ def getNullLogger():
     return logger
 
 
-# The class should implement the following functionality from the doc
-# https://www.nordugrid.org/arc/arc6/tech/rest/rest.html in separate
-# methods so that they can be overriden. The public API should stay the
-# same
-#
-# - get supported API versions
-# - get CE information
-#
-# - job list
-# - submit jobs
-# - job info
-# - job status
-# - kill job
-# - clean job
-# - restart job
-# - job delegations
-#
-# - get file
-# - put file
-# - (delete file)
-# - (head file)
-# - get dir
-# - (head dir)
-# - (delete dir)
-#
-# - (list user delegations)
-# - (head delegations)
-# - create delegation (POST action=new)
-# - manage delegation (POST action=get|renew|delete)
-# - upload public part of delegation (PUT)
-#
-# - get diagnose file (supported by file download)
-# - (head diagnose file)
 class ARCRest:
 
     @classmethod
@@ -480,12 +447,6 @@ class ARCRest:
             return jsonData["job"]
 
     def _getInputUploads(self, job):
-        """
-        Return a list of upload dicts.
-
-        Raises:
-            - InputFileError
-        """
         uploads = []
         for name, source in job.inputFiles.items():
             try:
@@ -803,7 +764,6 @@ class ARCRest_1_0(ARCRest):
         return runtimes
 
     def submitJobs(self, queue, jobs, uploadData=True):
-        """Submit the list of jobs to the given queue."""
         ceInfo = self.getCEInfo()
         queueInfo = self._findQueue(queue, ceInfo)
         if queueInfo is None:
