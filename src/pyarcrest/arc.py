@@ -128,7 +128,7 @@ class ARCRest:
             if code != 202:
                 job.errors.append(ARCHTTPError(code, reason, f"Error restarting job {job.id}: {code} {reason}"))
 
-    def getJobsDelegations(self, jobs, logger=None):
+    def getJobsDelegations(self, jobs):
         results = self._manageJobs(jobs, "delegations")
         for job, result in zip(jobs, results):
             code, reason = int(result["status-code"]), result["reason"]
