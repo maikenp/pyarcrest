@@ -29,7 +29,6 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-import arc
 from pyarcrest.common import getNullLogger, HTTP_BUFFER_SIZE
 from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
                               DescriptionUnparseError, InputFileError,
@@ -728,6 +727,7 @@ class ARCRest_1_0(ARCRest):
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
     def createJobs(self, jobs, delegationID, queue):
+        import arc
         ceInfo = self.getCEInfo()
         queueInfo = self._findQueue(queue, ceInfo)
         if queueInfo is None:
@@ -835,6 +835,7 @@ class ARCRest_1_1(ARCRest):
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
     def createJobs(self, jobs, delegationID, queue):
+        import arc
         ceInfo = self.getCEInfo()
         queueInfo = self._findQueue(queue, ceInfo)
         if queueInfo is None:
