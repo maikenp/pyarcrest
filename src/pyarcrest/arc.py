@@ -1141,6 +1141,7 @@ def isLocalInputFile(name, path):
 
 
 def processJobDescription(jobdesc):
+    import arc
     exepath = jobdesc.Application.Executable.Path
     if exepath and exepath.startswith("/"):  # absolute paths are on compute nodes
         exepath = ""
