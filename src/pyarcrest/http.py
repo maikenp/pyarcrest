@@ -16,12 +16,12 @@ class HTTPClient:
 
         if url:
             parts = urlparse(url)
-            if parts.scheme == "https":
+            if parts.scheme == "https" or parts.scheme == "":
                 useHTTPS = True
             elif parts.scheme == "http":
                 useHTTPS = False
             else:
-                raise HTTPClientError("URL scheme not HTTP(S)")
+                raise HTTPClientError(f"URL scheme not http(s) but {parts.scheme}")
             host = parts.hostname
             if host is None:
                 raise HTTPClientError("No hostname in URL")
