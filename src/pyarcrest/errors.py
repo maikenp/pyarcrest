@@ -38,8 +38,17 @@ class InputFileError(ARCError):
 class NoValueInARCResult(ARCError):
     pass
 
+
 class MatchmakingError(ARCError):
     pass
+
+
+class InputUploadError(ARCError):
+
+    def __init__(self, jobid, state, errors):
+        self.jobid = jobid
+        self.state = state
+        self.errors = errors
 
 
 class MissingResultFile(ARCError):
