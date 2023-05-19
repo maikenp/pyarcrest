@@ -953,11 +953,12 @@ class ARCRest:
 
         VARIABLE_KEYS = ["Error", "ExecutionNode", "RestartState"]
         for key in VARIABLE_KEYS:
-            # /rest/1.0 compatibility
-            if isinstance(infoDict[key], list):
-                info[key] = infoDict[key]
-            else:
-                info[key] = [infoDict[key]]
+            if key in infoDict:
+                # /rest/1.0 compatibility
+                if isinstance(infoDict[key], list):
+                    info[key] = infoDict[key]
+                else:
+                    info[key] = [infoDict[key]]
 
         # get state from a list of activity states in different systems
         for state in infoDict.get("State", []):
