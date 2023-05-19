@@ -415,7 +415,7 @@ class ARCRest:
 
         if queue and walltime:
             try:
-                self.matchWalltime(ceInfo, queue, walltime)
+                self._matchWalltime(ceInfo, queue, walltime)
             except MatchmakingError as exc:
                 errors.append(exc)
 
