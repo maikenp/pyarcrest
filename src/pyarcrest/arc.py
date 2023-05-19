@@ -748,7 +748,7 @@ class ARCRest:
 
         for (jobix, inputFiles), result in zip(tosubmit, results):
             if isinstance(result, ARCHTTPError):
-                resultDict[jobix] = result
+                resultDict[jobix] = [result]
             else:
                 jobid, state = result
                 resultDict[jobix] = (jobid, state)
