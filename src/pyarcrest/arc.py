@@ -663,6 +663,109 @@ class ARCRest:
                 runtimes.append(envname)
         return runtimes
 
+    # TODO: think about what to log and how
+    def _submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None, v1_0=False):
+        import arc
+        ceInfo = self.getCEInfo()
+
+        # A list of tuples of index and input file dict for every job
+        # description to be submitted. The index is the description's
+        # position in the given parameter of job descriptions and is
+        # required to create properly aligned results.
+        tosubmit = []
+
+        # A dict of a key that is index in given descs list and a value that
+        # is either a list of exceptions for failed submission or a tuple of
+        # jobid and state for successful submission.
+        resultDict = {}
+
+        jobdescs = arc.JobDescriptionList()
+        bulkdesc = ""
+        for i in range(len(descs)):
+            # parse job description
+            if not arc.JobDescription_Parse(descs[i], jobdescs):
+                resultDict[i] = [DescriptionParseError("Failed to parse description")]
+                continue
+            arcdesc = jobdescs[-1]
+
+            # get queue, runtimes and walltime from description
+            jobqueue = arcdesc.Resources.QueueName
+            if not jobqueue:
+                jobqueue = queue
+                if v1_0:
+                    # set queue in job description
+                    arcdesc.Resources.QueueName = queue
+            runtimes = [str(env) for env in arcdesc.Resources.RunTimeEnvironment.getSoftwareList()]
+            if not runtimes:
+                runtimes = []
+            walltime = arcdesc.Resources.TotalWallTime.range.max
+            if walltime == -1:
+                walltime = None
+
+            # do matchmaking
+            if matchDescs:
+                errors = self.matchJob(ceInfo, jobqueue, runtimes, walltime)
+                if errors:
+                    resultDict[i] = errors
+                    continue
+
+            if v1_0:
+                # add delegation ID to description
+                arcdesc.DataStaging.DelegationID = delegationID
+
+            # process job description
+            if processDescs:
+                self._processJobDescription(arcdesc)
+
+            # get input files from description
+            inputFiles = self._getArclibInputFiles(arcdesc)
+
+            # unparse modified description, remove xml version node because it
+            # is not accepted by ARC CE, add to bulk description
+            unparseResult = arcdesc.UnParse("emies:adl")
+            if not unparseResult[0]:
+                resultDict[i] = [DescriptionUnparseError("Could not unparse processed description")]
+                continue
+            descstart = unparseResult[1].find("<ActivityDescription")
+            bulkdesc += unparseResult[1][descstart:]
+
+            tosubmit.append((i, inputFiles))
+
+        if not tosubmit:
+            return [resultDict[i] for i in range(len(descs))]
+
+        # merge into bulk description
+        if len(tosubmit) > 1:
+            bulkdesc = f"<ActivityDescriptions>{bulkdesc}</ActivityDescriptions>"
+
+        # submit jobs to ARC
+        # TODO: handle exceptions
+        results = self.createJobs(bulkdesc)
+
+        uploadIXs = []  # a list of job indexes for proper result processing
+        uploadIDs = []  # a list of jobids for which to upload files
+        uploadInputs = []  # a list of job input file dicts for upload
+
+        for (jobix, inputFiles), result in zip(tosubmit, results):
+            if isinstance(result, ARCHTTPError):
+                resultDict[jobix] = result
+            else:
+                jobid, state = result
+                resultDict[jobix] = (jobid, state)
+                uploadIDs.append(jobid)
+                uploadInputs.append(inputFiles)
+                uploadIXs.append(jobix)
+
+        # upload jobs' local input data
+        if uploadData:
+            errors = self.uploadJobFiles(uploadIDs, uploadInputs, workers=workers, blocksize=blocksize, timeout=timeout)
+            for jobix, uploadErrors in zip(uploadIXs, errors):
+                if uploadErrors:
+                    jobid, state = resultDict[jobix]
+                    resultDict[jobix] = [InputUploadError(jobid, state, uploadErrors)]
+
+        return [resultDict[i] for i in range(len(descs))]
+
     @classmethod
     def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
         headers["Accept"] = "application/json"
@@ -867,109 +970,6 @@ class ARCRest:
                 info["ExecutionNode"][i] = ''.join([i for i in info["ExecutionNode"][i] if ord(i) < 128])
 
         return info
-
-    # TODO: think about what to log and how
-    def _submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None, v1_0=False):
-        import arc
-        ceInfo = self.getCEInfo()
-
-        # A list of tuples of index and input file dict for every job
-        # description to be submitted. The index is the description's
-        # position in the given parameter of job descriptions and is
-        # required to create properly aligned results.
-        tosubmit = []
-
-        # A dict of a key that is index in given descs list and a value that
-        # is either a list of exceptions for failed submission or a tuple of
-        # jobid and state for successful submission.
-        resultDict = {}
-
-        jobdescs = arc.JobDescriptionList()
-        bulkdesc = ""
-        for i in range(len(descs)):
-            # parse job description
-            if not arc.JobDescription_Parse(descs[i], jobdescs):
-                resultDict[i] = [DescriptionParseError("Failed to parse description")]
-                continue
-            arcdesc = jobdescs[-1]
-
-            # get queue, runtimes and walltime from description
-            jobqueue = arcdesc.Resources.QueueName
-            if not jobqueue:
-                jobqueue = queue
-                if v1_0:
-                    # set queue in job description
-                    arcdesc.Resources.QueueName = queue
-            runtimes = [str(env) for env in arcdesc.Resources.RunTimeEnvironment.getSoftwareList()]
-            if not runtimes:
-                runtimes = []
-            walltime = arcdesc.Resources.TotalWallTime.range.max
-            if walltime == -1:
-                walltime = None
-
-            # do matchmaking
-            if matchDescs:
-                errors = self.matchJob(ceInfo, jobqueue, runtimes, walltime)
-                if errors:
-                    resultDict[i] = errors
-                    continue
-
-            if v1_0:
-                # add delegation ID to description
-                arcdesc.DataStaging.DelegationID = delegationID
-
-            # process job description
-            if processDescs:
-                self._processJobDescription(arcdesc)
-
-            # get input files from description
-            inputFiles = self._getArclibInputFiles(arcdesc)
-
-            # unparse modified description, remove xml version node because it
-            # is not accepted by ARC CE, add to bulk description
-            unparseResult = arcdesc.UnParse("emies:adl")
-            if not unparseResult[0]:
-                resultDict[i] = [DescriptionUnparseError("Could not unparse processed description")]
-                continue
-            descstart = unparseResult[1].find("<ActivityDescription")
-            bulkdesc += unparseResult[1][descstart:]
-
-            tosubmit.append((i, inputFiles))
-
-        if not tosubmit:
-            return [resultDict[i] for i in range(len(descs))]
-
-        # merge into bulk description
-        if len(tosubmit) > 1:
-            bulkdesc = f"<ActivityDescriptions>{bulkdesc}</ActivityDescriptions>"
-
-        # submit jobs to ARC
-        # TODO: handle exceptions
-        results = self.createJobs(bulkdesc)
-
-        uploadIXs = []  # a list of job indexes for proper result processing
-        uploadIDs = []  # a list of jobids for which to upload files
-        uploadInputs = []  # a list of job input file dicts for upload
-
-        for (jobix, inputFiles), result in zip(tosubmit, results):
-            if isinstance(result, ARCHTTPError):
-                resultDict[jobix] = result
-            else:
-                jobid, state = result
-                resultDict[jobix] = (jobid, state)
-                uploadIDs.append(jobid)
-                uploadInputs.append(inputFiles)
-                uploadIXs.append(jobix)
-
-        # upload jobs' local input data
-        if uploadData:
-            errors = self.uploadJobFiles(uploadIDs, uploadInputs, workers=workers, blocksize=blocksize, timeout=timeout)
-            for jobix, uploadErrors in zip(uploadIXs, errors):
-                if uploadErrors:
-                    jobid, state = resultDict[jobix]
-                    resultDict[jobix] = [InputUploadError(jobid, state, uploadErrors)]
-
-        return [resultDict[i] for i in range(len(descs))]
 
     ### public static methods ###
 
