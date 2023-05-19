@@ -20,7 +20,6 @@ import datetime
 import json
 import os
 import queue
-import sys
 import threading
 from urllib.parse import urlparse
 
@@ -86,7 +85,7 @@ class ARCRest:
 
         return [job["id"] for job in jsonData]
 
-    def createJobs(self, jobs, delegationID, queue):
+    def createJobs(self, description, delegationID=None, queue=None, isADL=True):
         raise Exception("Not implemented in the base class")
 
     def getJobsInfo(self, jobs):
@@ -95,11 +94,11 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 200:
-                results.append(ARCHTTPError(code, reason, f"Error getting info for job {job.id}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason, f"Error getting info for job {job}: {code} {reason}"))
             elif "info_document" not in response:
-                results.append(NoValueInARCResult(f"No info document in successful info response for job {job.id}"))
+                results.append(NoValueInARCResult(f"No info document in successful info response for job {job}"))
             else:
-                results.append(response["info_document"])
+                results.append(self._parseJobInfo(response["info_document"]))
         return results
 
     def getJobsStatus(self, jobs):
@@ -108,9 +107,9 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 200:
-                results.append(ARCHTTPError(code, reason, f"Error getting status for job {job.id}: {code} {reason}"), success=False)
+                results.append(ARCHTTPError(code, reason, f"Error getting status for job {job}: {code} {reason}"))
             elif "state" not in response:
-                results.append(NoValueInARCResult("No state in successful status response"), success=False)
+                results.append(NoValueInARCResult("No state in successful status response"))
             else:
                 results.append(response["state"])
         return results
@@ -121,7 +120,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 202:
-                results.append(ARCHTTPError(code, reason, f"Error killing job {job.id}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason, f"Error killing job {job}: {code} {reason}"))
             else:
                 results.append(True)
         return results
@@ -132,7 +131,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 202:
-                results.append(ARCHTTPError(code, reason, f"Error cleaning job {job.id}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason, f"Error cleaning job {job}: {code} {reason}"))
             else:
                 results.append(True)
         return results
@@ -143,7 +142,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 202:
-                results.append(ARCHTTPError(code, reason, f"Error restarting job {job.id}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason, f"Error restarting job {job}: {code} {reason}"))
             else:
                 results.append(True)
         return results
@@ -154,11 +153,15 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 200:
-                results.append(ARCHTTPError(code, reason, f"Error getting delegations for job {job.id}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason, f"Error getting delegations for job {job}: {code} {reason}"))
             elif "delegation_id" not in response:
                 results.append(NoValueInARCResult("No delegation ID in successful response"))
             else:
-                results.append(response["delegation_id"])
+                # /rest/1.0 compatibility
+                if isinstance(response["delegation_id"], list):
+                    results.append(response["delegation_id"])
+                else:
+                    results.append([response["delegation_id"]])
         return results
 
     def downloadFile(self, url, path, blocksize=None):
@@ -386,24 +389,12 @@ class ARCRest:
         pem = self._signCSR(csr, lifetime=lifetime)
         try:
             self.uploadDelegation(delegationID, pem)
-        except Exception as exc:
+        except Exception:
             self.deleteDelegation(delegationID)
             raise
 
-    def submitJobs(self, queue, jobs, uploadData=True, workers=10, blocksize=None, timeout=None):
-        # get delegation for proxy
-        delegationID = self.createDelegation()
-
-        # submit job descriptions to ARC CE
-        self.createJobs(jobs, delegationID, queue)
-
-        # upload jobs' local input data
-        if uploadData:
-            toupload = []
-            for job in jobs:
-                if not job.errors:
-                    toupload.append(job)
-            self.uploadJobFiles(toupload, workers=workers, blocksize=blocksize, timeout=timeout)
+    def submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
+        raise Exception("Not implemented in the base class")
 
     # TODO: should queue be mandatory parameter for this client?
     def matchJob(self, ceInfo, queue, runtimes=[], walltime=None):
@@ -837,6 +828,46 @@ class ARCRest:
                 outfile.Name = logpath
             jobdesc.DataStaging.OutputFiles.append(outfile)
 
+    @classmethod
+    def _parseJobInfo(cls, infoDocument):
+        info = {}
+        infoDict = infoDocument.get("ComputingActivity", {})
+
+        COPY_KEYS = ["Name", "Type", "LocalIDFromManager", "Owner", "LocalOwner", "StdIn", "StdOut", "StdErr", "LogDir", "Queue"]
+        for key in COPY_KEYS:
+            if key in infoDict:
+                info[key] = infoDict[key]
+
+        INT_KEYS = ["UsedTotalWallTime", "UsedTotalCPUTime", "RequestedTotalWallTime", "RequestedTotalCPUTime", "RequestedSlots", "ExitCode", "WaitingPosition", "UsedMainMemory"]
+        for key in INT_KEYS:
+            if key in infoDict:
+                info[key] = int(infoDict[key])
+
+        TSTAMP_KEYS = ["SubmissionTime", "EndTime", "WorkingAreaEraseTime", "ProxyExpirationTime"]
+        for key in TSTAMP_KEYS:
+            if key in infoDict:
+                info[key] = datetime.datetime.strptime(infoDict[key], "%Y-%m-%dT%H:%M:%SZ")
+
+        VARIABLE_KEYS = ["Error", "ExecutionNode", "RestartState"]
+        for key in VARIABLE_KEYS:
+            # /rest/1.0 compatibility
+            if isinstance(infoDict[key], list):
+                info[key] = infoDict[key]
+            else:
+                info[key] = [infoDict[key]]
+
+        # get state from a list of activity states in different systems
+        for state in infoDict.get("State", []):
+            if state.startswith("arcrest:"):
+                info["State"] = state[len("arcrest:"):]
+
+        # throw out all non ASCII characters from execution node strings
+        if "ExecutionNode" in infoDict:
+            for i in range(len(info["ExecutionNode"])):
+                info["ExecutionNode"][i] = ''.join([i for i in info["ExecutionNode"][i] if ord(i) < 128])
+
+        return info
+
     # TODO: think about what to log and how
     def _submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None, v1_0=False):
         import arc
@@ -889,7 +920,7 @@ class ARCRest:
 
             # process job description
             if processDescs:
-                self._processJobDescription(desc)
+                self._processJobDescription(arcdesc)
 
             # get input files from description
             inputFiles = self._getArclibInputFiles(arcdesc)
@@ -922,7 +953,7 @@ class ARCRest:
 
         for (jobix, inputFiles), result in zip(tosubmit, results):
             if isinstance(result, ARCHTTPError):
-                resultDict[ix] = result
+                resultDict[jobix] = result
             else:
                 jobid, state = result
                 resultDict[jobix] = (jobid, state)
@@ -958,8 +989,8 @@ class ARCRest:
     @classmethod
     def getClient(cls, url=None, host=None, port=None, proxypath=None, logger=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex"):
         IMPLEMENTED_VERSIONS = {
-            "1.0" : ARCRest_1_0,
-            "1.1" : ARCRest_1_1,
+            "1.0": ARCRest_1_0,
+            "1.1": ARCRest_1_1,
         }
 
         httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, logger=logger, blocksize=blocksize, timeout=timeout)
@@ -993,7 +1024,7 @@ class ARCRest_1_0(ARCRest):
         self.version = "1.0"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
-    def createJobs(self, description, isADL=True):
+    def createJobs(self, description, delegationID=None, queue=None, isADL=True):
         contentType = "application/xml" if isADL else "application/rsl"
         status, text = self._requestJSON(
             "POST",
@@ -1012,16 +1043,27 @@ class ARCRest_1_0(ARCRest):
             responses = jsonData["job"]
 
         results = []
-        for job, response in zip(tosubmit, responses):
+        for response in responses:
             code, reason = int(response["status-code"]), response["reason"]
             if code != 201:
-                results.append(ARCHTTPError(code, reason, f"Error submitting job {job.descstr}: {reason}"))
+                results.append(ARCHTTPError(code, reason, f"Submission error: {reason}"))
             else:
                 results.append((response["id"], response["state"]))
         return results
 
-    def submitJobs(self, *args, **kwargs):
-        return self._submitJobs(*args, v1_0=True, **kwargs)
+    def submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
+        return self._submitJobs(
+            delegationID,
+            descs,
+            queue,
+            processDescs=processDescs,
+            matchDescs=matchDescs,
+            uploadData=uploadData,
+            workers=workers,
+            blocksize=blocksize,
+            timeout=timeout,
+            v1_0=True,
+        )
 
 
 class ARCRest_1_1(ARCRest):
@@ -1050,16 +1092,26 @@ class ARCRest_1_1(ARCRest):
         responses = json.loads(text)
 
         results = []
-        for job, response in zip(tosubmit, responses):
+        for response in responses:
             code, reason = int(response["status-code"]), response["reason"]
             if code != 201:
-                results.append(ARCHTTPError(code, reason, f"Error submitting job {job.descstr}: {reason}"))
+                results.append(ARCHTTPError(code, reason, f"Submission error: {reason}"))
             else:
                 results.append((response["id"], response["state"]))
         return results
 
-    def submitJobs(self, *args, **kwargs):
-        return self._submitJobs(*args, **kwargs)
+    def submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
+        return self._submitJobs(
+            delegationID,
+            descs,
+            queue,
+            processDescs=processDescs,
+            matchDescs=matchDescs,
+            uploadData=uploadData,
+            workers=workers,
+            blocksize=blocksize,
+            timeout=timeout,
+        )
 
 
 class FileTransfer:
