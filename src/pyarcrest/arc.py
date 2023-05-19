@@ -1090,7 +1090,7 @@ class ARCRest_1_1(ARCRest):
         )
         if status != 201:
             raise ARCHTTPError(status, text, f"Error submitting jobs: {status} {text}")
-        responses = json.loads(text)
+        responses = json.loads(text)["job"]
 
         results = []
         for response in responses:
