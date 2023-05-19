@@ -864,7 +864,7 @@ class ARCRest:
                 logger.debug(f"Download URL {transfer.url} and path {transfer.path} for job {jobid} failed: {excstr}")
 
     @classmethod
-    def _getArclibInputFiles(desc):
+    def _getArclibInputFiles(cls, desc):
         inputFiles = {}
         for infile in desc.DataStaging.InputFiles:
             source = None
