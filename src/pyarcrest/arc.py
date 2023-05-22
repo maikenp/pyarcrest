@@ -740,7 +740,7 @@ class ARCRest:
 
         # submit jobs to ARC
         # TODO: handle exceptions
-        results = self.createJobs(bulkdesc)
+        results = self.createJobs(bulkdesc, delegationID, queue)
 
         uploadIXs = []  # a list of job indexes for proper result processing
         uploadIDs = []  # a list of jobids for which to upload files
