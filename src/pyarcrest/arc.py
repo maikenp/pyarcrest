@@ -393,7 +393,7 @@ class ARCRest:
             self.deleteDelegation(delegationID)
             raise
 
-    def submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
+    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
         raise Exception("Not implemented in the base class")
 
     # TODO: should queue be mandatory parameter for this client?
@@ -664,9 +664,12 @@ class ARCRest:
         return runtimes
 
     # TODO: think about what to log and how
-    def _submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None, v1_0=False):
+    def _submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None, v1_0=False):
         import arc
         ceInfo = self.getCEInfo()
+
+        if delegationID is None:
+            delegationID = self.createDelegation()
 
         # A list of tuples of index and input file dict for every job
         # description to be submitted. The index is the description's
@@ -1052,11 +1055,11 @@ class ARCRest_1_0(ARCRest):
                 results.append((response["id"], response["state"]))
         return results
 
-    def submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
+    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
         return self._submitJobs(
-            delegationID,
             descs,
             queue,
+            delegationID,
             processDescs=processDescs,
             matchDescs=matchDescs,
             uploadData=uploadData,
@@ -1101,11 +1104,11 @@ class ARCRest_1_1(ARCRest):
                 results.append((response["id"], response["state"]))
         return results
 
-    def submitJobs(self, delegationID, descs, queue, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
+    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
         return self._submitJobs(
-            delegationID,
             descs,
             queue,
+            delegationID,
             processDescs=processDescs,
             matchDescs=matchDescs,
             uploadData=uploadData,
