@@ -85,7 +85,7 @@ class ARCRest:
 
         return [job["id"] for job in jsonData]
 
-    def createJobs(self, description, delegationID=None, queue=None, isADL=True):
+    def createJobs(self, description, queue=None, delegationID=None, isADL=True):
         raise Exception("Not implemented in the base class")
 
     def getJobsInfo(self, jobs):
@@ -1028,7 +1028,7 @@ class ARCRest_1_0(ARCRest):
         self.version = "1.0"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
-    def createJobs(self, description, delegationID=None, queue=None, isADL=True):
+    def createJobs(self, description, queue=None, delegationID=None, isADL=True):
         contentType = "application/xml" if isADL else "application/rsl"
         status, text = self._requestJSON(
             "POST",
@@ -1077,7 +1077,7 @@ class ARCRest_1_1(ARCRest):
         self.version = "1.1"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
-    def createJobs(self, description, delegationID=None, queue=None, isADL=True):
+    def createJobs(self, description, queue=None, delegationID=None, isADL=True):
         params = {"action": "new"}
         if queue:
             params["queue"] = queue
