@@ -64,13 +64,13 @@ class ARCRest:
     def getCEInfo(self):
         status, text = self._requestJSON("GET", f"{self.apiPath}/info")
         if status != 200:
-            raise ARCHTTPError(status, text, f"Error getting ARC CE info: {status} {text}")
+            raise ARCHTTPError(status, text)
         return json.loads(text)
 
     def getJobsList(self):
         status, text = self._requestJSON("GET", f"{self.apiPath}/jobs")
         if status != 200:
-            raise ARCHTTPError(status, text, f"Error getting jobs list: {status} {text}")
+            raise ARCHTTPError(status, text)
 
         # /rest/1.0 compatibility
         try:
@@ -94,7 +94,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 200:
-                results.append(ARCHTTPError(code, reason, f"Error getting info for job {job}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason))
             elif "info_document" not in response:
                 results.append(NoValueInARCResult(f"No info document in successful info response for job {job}"))
             else:
@@ -107,7 +107,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 200:
-                results.append(ARCHTTPError(code, reason, f"Error getting status for job {job}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason))
             elif "state" not in response:
                 results.append(NoValueInARCResult("No state in successful status response"))
             else:
@@ -120,7 +120,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 202:
-                results.append(ARCHTTPError(code, reason, f"Error killing job {job}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason))
             else:
                 results.append(True)
         return results
@@ -131,7 +131,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 202:
-                results.append(ARCHTTPError(code, reason, f"Error cleaning job {job}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason))
             else:
                 results.append(True)
         return results
@@ -142,7 +142,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 202:
-                results.append(ARCHTTPError(code, reason, f"Error restarting job {job}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason))
             else:
                 results.append(True)
         return results
@@ -153,7 +153,7 @@ class ARCRest:
         for job, response in zip(jobs, responses):
             code, reason = int(response["status-code"]), response["reason"]
             if code != 200:
-                results.append(ARCHTTPError(code, reason, f"Error getting delegations for job {job}: {code} {reason}"))
+                results.append(ARCHTTPError(code, reason))
             elif "delegation_id" not in response:
                 results.append(NoValueInARCResult("No delegation ID in successful response"))
             else:
@@ -186,12 +186,12 @@ class ARCRest:
             resp = self.httpClient.request("PUT", url, data=f)
             text = resp.read().decode()
             if resp.status != 200:
-                raise ARCHTTPError(resp.status, text, f"Error uploading {path} to {url}: {resp.status} {text}")
+                raise ARCHTTPError(resp.status, text)
 
     def downloadListing(self, url):
         status, text = self._requestJSON("GET", url)
         if status != 200:
-            raise ARCHTTPError(status, text, f"Error downloading listing {url}: {status} {text}")
+            raise ARCHTTPError(status, text)
 
         # /rest/1.0 compatibility
         try:
@@ -205,7 +205,7 @@ class ARCRest:
     def getDelegationsList(self):
         status, text = self._requestJSON("GET", f"{self.apiPath}/delegations")
         if status != 200:
-            raise ARCHTTPError(status, text, f"Error getting delegations list: {status} {text}")
+            raise ARCHTTPError(status, text)
 
         # /rest/1.0 compatibility
         try:
@@ -222,7 +222,7 @@ class ARCRest:
         resp = self.httpClient.request("POST", url)
         respstr = resp.read().decode()
         if resp.status != 201:
-            raise ARCHTTPError(resp.status, respstr, f"Cannot get delegation CSR: {resp.status} {respstr}")
+            raise ARCHTTPError(resp.status, respstr)
         return respstr, resp.getheader("Location").split("/")[-1]
 
     def uploadDelegation(self, delegationID, signedCert):
@@ -231,14 +231,14 @@ class ARCRest:
         resp = self.httpClient.request("PUT", url, data=signedCert, headers=headers)
         respstr = resp.read().decode()
         if resp.status != 200:
-            raise ARCHTTPError(resp.status, respstr, f"Cannot upload delegated cert for delegation {delegationID}: {resp.status} {respstr}")
+            raise ARCHTTPError(resp.status, respstr)
 
     def getDelegationCert(self, delegationID):
         url = f"{self.apiPath}/delegations/{delegationID}?action=get"
         resp = self.httpClient.request("POST", url)
         respstr = resp.read().decode()
         if resp.status != 200:
-            raise ARCHTTPError(resp.status, respstr, f"Cannot get cert for delegation {delegationID}: {resp.status} {respstr}")
+            raise ARCHTTPError(resp.status, respstr)
         return respstr
 
     # returns CSR
@@ -247,7 +247,7 @@ class ARCRest:
         resp = self.httpClient.request("POST", url)
         respstr = resp.read().decode()
         if resp.status != 201:
-            raise ARCHTTPError(resp.status, respstr, f"Cannot renew delegation {delegationID}: {resp.status} {respstr}")
+            raise ARCHTTPError(resp.status, respstr)
         return respstr
 
     def deleteDelegation(self, delegationID):
@@ -255,7 +255,7 @@ class ARCRest:
         resp = self.httpClient.request("POST", url)
         respstr = resp.read().decode()
         if resp.status != 200:
-            raise ARCHTTPError(resp.status, respstr, f"Cannot delete delegation {delegationID}: {resp.status} {respstr}")
+            raise ARCHTTPError(resp.status, respstr)
 
     ### Higher level job operations ###
 
@@ -552,7 +552,7 @@ class ARCRest:
         url = f"{self.apiPath}/jobs?action={action}"
         status, text = self._requestJSON("POST", url, jsonData=jsonData)
         if status != 201:
-            raise ARCHTTPError(status, text, f"ARC jobs \"{action}\" action error: {status} {text}")
+            raise ARCHTTPError(status, text)
         jsonData = json.loads(text)
 
         # /rest/1.0 compatibility
@@ -981,7 +981,7 @@ class ARCRest:
     def getAPIVersionsStatic(cls, httpClient, apiBase="/arex"):
         status, text = cls._requestJSONStatic(httpClient, "GET", f"{apiBase}/rest")
         if status != 200:
-            raise ARCHTTPError(status, text, f"Error getting ARC API versions: {status} {text}")
+            raise ARCHTTPError(status, text)
         apiVersions = json.loads(text)
 
         # /rest/1.0 compatibility
@@ -1037,7 +1037,7 @@ class ARCRest_1_0(ARCRest):
             headers={"Content-Type": contentType},
         )
         if status != 201:
-            raise ARCHTTPError(status, text, f"Error submitting jobs: {status} {text}")
+            raise ARCHTTPError(status, text)
         jsonData = json.loads(text)
 
         # /rest/1.0 compatibility
@@ -1050,7 +1050,7 @@ class ARCRest_1_0(ARCRest):
         for response in responses:
             code, reason = int(response["status-code"]), response["reason"]
             if code != 201:
-                results.append(ARCHTTPError(code, reason, f"Submission error: {reason}"))
+                results.append(ARCHTTPError(code, reason))
             else:
                 results.append((response["id"], response["state"]))
         return results
@@ -1092,14 +1092,14 @@ class ARCRest_1_1(ARCRest):
             params=params,
         )
         if status != 201:
-            raise ARCHTTPError(status, text, f"Error submitting jobs: {status} {text}")
+            raise ARCHTTPError(status, text)
         responses = json.loads(text)["job"]
 
         results = []
         for response in responses:
             code, reason = int(response["status-code"]), response["reason"]
             if code != 201:
-                results.append(ARCHTTPError(code, reason, f"Submission error: {reason}"))
+                results.append(ARCHTTPError(code, reason))
             else:
                 results.append((response["id"], response["state"]))
         return results
