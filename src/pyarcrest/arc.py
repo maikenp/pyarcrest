@@ -171,11 +171,11 @@ class ARCRest:
         return results
 
     def downloadFile(self, jobid, sessionPath, filePath):
-        urlPath = f"/jobs/{jobid}/session/{sessionPath}"
+        urlPath = f"{self.apiPath}/jobs/{jobid}/session/{sessionPath}"
         self._downloadURL(urlPath, filePath)
 
     def uploadFile(self, jobid, sessionPath, filePath):
-        urlPath = f"/jobs/{jobid}/session/{sessionPath}"
+        urlPath = f"{self.apiPath}/jobs/{jobid}/session/{sessionPath}"
         with open(filePath, "rb") as f:
             resp = self.httpClient.request("PUT", urlPath, data=f)
             text = resp.read().decode()
@@ -183,7 +183,7 @@ class ARCRest:
                 raise ARCHTTPError(resp.status, text)
 
     def downloadListing(self, jobid, sessionPath):
-        urlPath = f"/jobs/{jobid}/session/{sessionPath}"
+        urlPath = f"{self.apiPath}/jobs/{jobid}/session/{sessionPath}"
         status, text = self._requestJSON("GET", urlPath)
         if status != 200:
             raise ARCHTTPError(status, text)
@@ -200,7 +200,7 @@ class ARCRest:
     def downloadDiagnoseFile(self, jobid, name, path):
         if name not in self.DIAGNOSE_FILES:
             raise ARCError(f"Invalid control dir file requested: {name}")
-        urlPath = f"/jobs/{jobid}/diagnose/{name}"
+        urlPath = f"{self.apiPath}/jobs/{jobid}/diagnose/{name}"
         self._downloadURL(urlPath, path)
 
     def getDelegationsList(self):
