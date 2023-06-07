@@ -982,7 +982,7 @@ class ARCRest:
                 if version in IMPLEMENTED_VERSIONS:
                     apiVersion = version
                     break
-            if apiVersion:
+            if not apiVersion:
                 raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
 
         logger.debug(f"API version {apiVersion} selected")
