@@ -27,7 +27,7 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-from pyarcrest.common import HTTP_BUFFER_SIZE, getNullLogger
+from pyarcrest.common import getNullLogger
 from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
                               DescriptionUnparseError, InputFileError,
                               InputUploadError, MatchmakingError,
@@ -40,6 +40,12 @@ from pyarcrest.x509 import parsePEM, signRequest
 
 
 class ARCRest:
+
+    DIAGNOSE_FILES = [
+        "failed", "local", "errors", "description", "diag", "comment",
+        "status", "acl", "xml", "input", "output", "input_status",
+        "output_status", "statistics"
+    ]
 
     def __init__(self, httpClient, apiBase="/arex", logger=getNullLogger()):
         """
@@ -72,7 +78,6 @@ class ARCRest:
         if status != 200:
             raise ARCHTTPError(status, text)
 
-        # /rest/1.0 compatibility
         try:
             jsonData = json.loads(text)["job"]
         except json.JSONDecodeError as exc:
@@ -80,7 +85,8 @@ class ARCRest:
                 jsonData = []
             else:
                 raise
-        if isinstance(jsonData, dict):
+        # /rest/1.0 compatibility
+        if not isinstance(jsonData, list):
             jsonData = [jsonData]
 
         return [job["id"] for job in jsonData]
@@ -164,32 +170,21 @@ class ARCRest:
                     results.append([response["delegation_id"]])
         return results
 
-    def downloadFile(self, url, path, blocksize=None):
-        if blocksize is None:
-            blocksize = HTTP_BUFFER_SIZE
+    def downloadFile(self, jobid, sessionPath, filePath):
+        urlPath = f"/jobs/{jobid}/session/{sessionPath}"
+        self._downloadURL(urlPath, filePath)
 
-        resp = self.httpClient.request("GET", url)
-
-        if resp.status != 200:
-            text = resp.read().decode()
-            raise ARCHTTPError(resp.status, text, f"Error downloading URL {url} to {path}: {resp.status} {text}")
-
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            data = resp.read(blocksize)
-            while data:
-                f.write(data)
-                data = resp.read(blocksize)
-
-    def uploadFile(self, url, path):
-        with open(path, "rb") as f:
-            resp = self.httpClient.request("PUT", url, data=f)
+    def uploadFile(self, jobid, sessionPath, filePath):
+        urlPath = f"/jobs/{jobid}/session/{sessionPath}"
+        with open(filePath, "rb") as f:
+            resp = self.httpClient.request("PUT", urlPath, data=f)
             text = resp.read().decode()
             if resp.status != 200:
                 raise ARCHTTPError(resp.status, text)
 
-    def downloadListing(self, url):
-        status, text = self._requestJSON("GET", url)
+    def downloadListing(self, jobid, sessionPath):
+        urlPath = f"/jobs/{jobid}/session/{sessionPath}"
+        status, text = self._requestJSON("GET", urlPath)
         if status != 200:
             raise ARCHTTPError(status, text)
 
@@ -201,6 +196,12 @@ class ARCRest:
                 return {}
             else:
                 raise
+
+    def downloadDiagnoseFile(self, jobid, name, path):
+        if name not in self.DIAGNOSE_FILES:
+            raise ARCError(f"Invalid control dir file requested: {name}")
+        urlPath = f"/jobs/{jobid}/diagnose/{name}"
+        self._downloadURL(urlPath, path)
 
     def getDelegationsList(self):
         status, text = self._requestJSON("GET", f"{self.apiPath}/delegations")
@@ -259,17 +260,17 @@ class ARCRest:
 
     ### Higher level job operations ###
 
-    # TODO: HARDCODED
     def uploadJobFiles(self, jobids, jobInputs, workers=10, blocksize=None, timeout=None):
         resultDict = {jobid: [] for jobid in jobids}
 
         # create upload queue
         uploadQueue = queue.Queue()
         for jobid, inputFiles in zip(jobids, jobInputs):
-            errors = self._addInputTransfers(uploadQueue, jobid, inputFiles)
-            if errors:
-                self.logger.debug(f"Skipping job {jobid} due to input file errors")
-                resultDict[jobid].extend(errors)
+            try:
+                self._addInputTransfers(uploadQueue, jobid, inputFiles)
+            except InputFileError as exc:
+                resultDict[jobid].append(exc)
+                self.logger.debug(f"Skipping job {jobid} due to input file error: {exc}")
 
         if uploadQueue.empty():
             self.logger.debug("No local inputs to upload")
@@ -318,21 +319,21 @@ class ARCRest:
 
         return [resultDict[jobid] for jobid in jobids]
 
-    # TODO: HARDCODED
-    def downloadJobFiles(self, downloadDir, jobids, jobsDownloads, workers=10, blocksize=None, timeout=None):
+    def downloadJobFiles(self, downloadDir, jobids, outputFilters={}, diagnoseFiles={}, diagnoseDirs={}, workers=10, blocksize=None, timeout=None):
+        resultDict = {jobid: [] for jobid in jobids}
         transferQueue = TransferQueue(workers)
 
-        downloadDict = {}
-        for jobid, downloadFiles in zip(jobids, jobsDownloads):
-            downloadDict[jobid] = downloadFiles
+        for jobid in jobids:
             cancelEvent = threading.Event()
-
             # add diagnose files to transfer queue
-            self._addDiagnoseTransfers(transferQueue, jobid, downloadFiles, cancelEvent)
-
+            try:
+                self._addDiagnoseTransfers(transferQueue, jobid, downloadDir, diagnoseFiles, diagnoseDirs, cancelEvent)
+            except ARCError as exc:
+                resultDict[jobid].append(exc)
+                continue
             # add job session directory as a listing transfer
-            url = f"{self.apiPath}/jobs/{jobid}/session"
-            transferQueue.put(FileTransfer(jobid, url, "", cancelEvent=cancelEvent, type="listing"))
+            path = os.path.join(downloadDir, jobid)
+            transferQueue.put(Transfer(jobid, "", path, cancelEvent=cancelEvent, type="listing"))
 
         errorQueue = queue.Queue()
 
@@ -361,8 +362,8 @@ class ARCRest:
                     transferQueue,
                     errorQueue,
                     downloadDir,
-                    downloadDict,
-                    logger=self.logger,
+                    outputFilters,
+                    self.logger,
                 ))
             concurrent.futures.wait(futures)
 
@@ -370,7 +371,6 @@ class ARCRest:
             restClient.close()
 
         # get transfer errors
-        resultDict = {jobid: [] for jobid in jobids}
         while not errorQueue.empty():
             error = errorQueue.get()
             resultDict[error["jobid"]].append(error["error"])
@@ -380,13 +380,17 @@ class ARCRest:
 
     def createDelegation(self, lifetime=None):
         csr, delegationID = self.requestNewDelegation()
-        pem = self._signCSR(csr, lifetime=lifetime)
-        self.uploadDelegation(delegationID, pem)
-        return delegationID
+        try:
+            pem = self._signCSR(csr, lifetime)
+            self.uploadDelegation(delegationID, pem)
+            return delegationID
+        except Exception:
+            self.deleteDelegation(delegationID)
+            raise
 
     def renewDelegation(self, delegationID, lifetime=None):
         csr = self.requestDelegationRenewal(delegationID)
-        pem = self._signCSR(csr, lifetime=lifetime)
+        pem = self._signCSR(csr, lifetime)
         try:
             self.uploadDelegation(delegationID, pem)
         except Exception:
@@ -396,8 +400,7 @@ class ARCRest:
     def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
         raise Exception("Not implemented in the base class")
 
-    # TODO: should queue be mandatory parameter for this client?
-    def matchJob(self, ceInfo, queue, runtimes=[], walltime=None):
+    def matchJob(self, ceInfo, queue=None, runtimes=[], walltime=None):
         errors = []
 
         if queue:
@@ -406,16 +409,16 @@ class ARCRest:
             except MatchmakingError as exc:
                 errors.append(exc)
 
-        if runtimes:
-            for runtime in runtimes:
+            # matching walltime requires queue
+            if walltime:
                 try:
-                    self._matchRuntime(ceInfo, runtime)
+                    self._matchWalltime(ceInfo, queue, walltime)
                 except MatchmakingError as exc:
                     errors.append(exc)
 
-        if queue and walltime:
+        for runtime in runtimes:
             try:
-                self._matchWalltime(ceInfo, queue, walltime)
+                self._matchRuntime(ceInfo, runtime)
             except MatchmakingError as exc:
                 errors.append(exc)
 
@@ -423,39 +426,38 @@ class ARCRest:
 
     ### Private support methods
 
+    def _downloadURL(self, url, path):
+        resp = self.httpClient.request("GET", url)
+
+        if resp.status != 200:
+            text = resp.read().decode()
+            raise ARCHTTPError(resp.status, text)
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        blocksize = self.httpClient.conn.blocksize
+        with open(path, "wb") as f:
+            data = resp.read(blocksize)
+            while data:
+                f.write(data)
+                data = resp.read(blocksize)
+
     # returns nothing if match successful, raises exception otherwise
     def _matchQueue(self, ceInfo, queue):
         if not self._findQueue(ceInfo, queue):
-            raise MatchmakingError(f"Queue {queue} not found to match walltime")
+            raise MatchmakingError(f"Queue {queue} not found")
 
+    # TODO: is it possible for user to just specify the runtime and any version
+    #       is OK or vice versa?
     # returns nothing if match successful, raises exception otherwise
     def _matchRuntime(self, ceInfo, runtime):
-        appenvs = ceInfo.get("Domains", {}) \
-                        .get("AdminDomain", {}) \
-                        .get("Services", {}) \
-                        .get("ComputingService", {}) \
-                        .get("ComputingManager", {}) \
-                        .get("ApplicationEnvironments", {}) \
-                        .get("ApplicationEnvironment", [])
-
-        # /rest/1.0 compatibility
-        if isinstance(appenvs, dict):
-            appenvs = [appenvs]
-
-        for env in appenvs:
-            if "AppName" in env:
-                envname = env["AppName"]
-                if "AppVersion" in env:
-                    envname += f"-{env['AppVersion']}"
-                if runtime == envname:
-                    return
-
-        raise MatchmakingError(f"Runtime {runtime} not found")
+        runtimes = self._findRuntimes(ceInfo)
+        if runtime not in runtimes:
+            raise MatchmakingError(f"Runtime {runtime} not found")
 
     # returns nothing if match successful, raises exception otherwise
     def _matchWalltime(self, ceInfo, queue, walltime):
         queueInfo = self._findQueue(ceInfo, queue)
-        if queueInfo is None:
+        if not queueInfo:
             raise MatchmakingError(f"Queue {queue} not found to match walltime")
 
         if "MaxWallTime" in queueInfo:
@@ -475,62 +477,64 @@ class ARCRest:
 
     def _addInputTransfers(self, uploadQueue, jobid, inputFiles):
         cancelEvent = threading.Event()
-        errors = []
+        transfers = []
         for name, source in inputFiles.items():
             try:
                 path = isLocalInputFile(name, source)
             except ValueError as exc:
-                error = InputFileError(f"Error parsing source {source} of input {name}: {exc}")
-                errors.append(error)
-                self.logger.debug(error)
-                continue
+                raise InputFileError(f"Error parsing source {source} of input {name}: {exc}")
             if not path:
-                self.logger.debug(f"Skipping non local input {name} at {source} for job {jobid}")
                 continue
             if not os.path.isfile(path):
-                error = InputFileError(f"Source {source} of input {name} is not a file")
-                errors.append(error)
-                self.logger.debug(error)
-                continue
-            url = f"{self.apiPath}/jobs/{jobid}/session/{name}"
-            uploadQueue.put(FileTransfer(jobid, url, path, cancelEvent=cancelEvent))
-            self.logger.debug(f"Will upload local input {name} at {path} for job {jobid}")
-        return errors
+                raise InputFileError(f"Source {source} of input {name} is not a file")
+            transfers.append(Transfer(jobid, name, path, cancelEvent=cancelEvent))
+        # no exception raised, add transfers to queue
+        for transfer in transfers:
+            uploadQueue.put(transfer)
 
-    def _addDiagnoseTransfers(self, transferQueue, jobid, downloadFiles, cancelEvent):
-        DIAG_FILES = [
-            "failed", "local", "errors", "description", "diag", "comment",
-            "status", "acl", "xml", "input", "output", "input_status",
-            "output_status", "statistics"
-        ]
-        # add all diagnose files to transfer queue
-        diagFiles = set()  # set instead of list to remove possible duplications
-        for download in downloadFiles:
-            if download.startswith("diagnose="):
-                # remove diagnose= part
-                diagnose = download[len("diagnose="):]
-                if not diagnose:
-                    self.logger.debug(f"Skipping empty download entry: {download}")
-                    continue  # error?
+    def _addDiagnoseTransfers(self, transferQueue, jobid, downloadDir, diagnoseFiles, diagnoseDirs, cancelEvent):
+        diagnoseList = diagnoseFiles.get(jobid, self.DIAGNOSE_FILES)
+        diagnoseDir = diagnoseDirs.get(jobid, "gmlog")
+        transfers = []
+        for diagFile in diagnoseList:
+            if diagFile not in self.DIAGNOSE_FILES:
+                raise ARCError(f"Invalid diagnose file name {diagFile}")
+            path = os.path.join(downloadDir, diagnoseDir, diagFile)
+            transfers.append(Transfer(jobid, diagFile, path, type="diagnose", cancelEvent=cancelEvent))
+        # no exception raised, add transfers to queue
+        for transfer in transfers:
+            transferQueue.put(transfer)
 
-                # add all files if entire log folder is specified
-                if diagnose.endswith("/"):
-                    self.logger.debug(f"Will download all diagnose files to {diagnose}")
-                    for diagFile in DIAG_FILES:
-                        diagFiles.add(f"{diagnose}{diagFile}")
+    # When name is "", it means the root of the session dir. In this case,
+    # slash must not be added to it.
+    def _addTransfersFromListing(self, transferQueue, jobid, filters, listing, name, path, cancelEvent):
+        if "file" in listing:
+            # /rest/1.0 compatibility
+            if not isinstance(listing["file"], list):
+                listing["file"] = [listing["file"]]
 
+            for f in listing["file"]:
+                newpath = os.path.join(path, f)
+                if name:
+                    newname = f"{name}/{f}"
                 else:
-                    diagFile = diagnose.split("/")[-1]
-                    if diagFile not in DIAG_FILES:
-                        self.logger.debug(f"Skipping download {download} because of unknown diagnose file {diagFile}")
-                        continue  # error?
-                    self.logger.debug(f"Will download diagnose file {diagFile} to {download}")
-                    diagFiles.add(diagnose)
+                    newpath = f
+                if not self._filterOutFile(filters, newname):
+                    transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="file"))
 
-        for diagFile in diagFiles:
-            diagName = diagFile.split("/")[-1]
-            url = f"{self.apiPath}/jobs/{jobid}/diagnose/{diagName}"
-            transferQueue.put(FileTransfer(jobid, url, diagFile, cancelEvent=cancelEvent, type="diagnose"))
+        if "dir" in listing:
+            # /rest/1.0 compatibility
+            if not isinstance(listing["dir"], list):
+                listing["dir"] = [listing["dir"]]
+
+            for d in listing["dir"]:
+                newpath = os.path.join(path, d)
+                if name:
+                    newname = f"{name}/{d}"
+                else:
+                    newname = d
+                if not self._filterOutListing(filters, newname):
+                    transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="listing"))
 
     def _requestJSON(self, *args, **kwargs):
         return self._requestJSONStatic(self.httpClient, *args, **kwargs)
@@ -556,63 +560,37 @@ class ARCRest:
         jsonData = json.loads(text)
 
         # /rest/1.0 compatibility
-        if isinstance(jsonData["job"], dict):
+        if not isinstance(jsonData["job"], list):
             return [jsonData["job"]]
         else:
             return jsonData["job"]
 
-    def _addTransfersFromListing(self, transferQueue, jobid, downloadFiles, listing, path, cancelEvent):
-        if "file" in listing:
-            # /rest/1.0 compatibility
-            if not isinstance(listing["file"], list):
-                listing["file"] = [listing["file"]]
-
-            for f in listing["file"]:
-                if path:
-                    newpath = f"{path}/{f}"
-                else:  # if session root, slash needs to be skipped
-                    newpath = f
-                if not self._filterOutFile(downloadFiles, newpath):
-                    url = f"{self.apiPath}/jobs/{jobid}/session/{newpath}"
-                    transferQueue.put(FileTransfer(jobid, url, newpath, cancelEvent, type="file"))
-        if "dir" in listing:
-            # /rest/1.0 compatibility
-            if not isinstance(listing["dir"], list):
-                listing["dir"] = [listing["dir"]]
-
-            for d in listing["dir"]:
-                if path:
-                    newpath = f"{path}/{d}"
-                else:  # if session root, slash needs to be skipped
-                    newpath = d
-                if not self._filterOutListing(downloadFiles, newpath):
-                    url = f"{self.apiPath}/jobs/{jobid}/session/{newpath}"
-                    transferQueue.put(FileTransfer(jobid, url, newpath, cancelEvent, type="listing"))
-
-    def _filterOutFile(self, downloadFiles, filePath):
-        if not downloadFiles:
+    # TODO: should a bare slash be used for the entire session directory if
+    #       it can be done just by having empty filters?
+    def _filterOutFile(self, filters, name):
+        if not filters:
             return False
-        for pattern in downloadFiles:
+        for pattern in filters:
             # direct match
-            if pattern == filePath:
+            if pattern == name:
                 return False
             # recursive folder match
-            elif pattern.endswith("/") and filePath.startswith(pattern):
+            elif pattern.endswith("/") and name.startswith(pattern):
                 return False
-            # entire session directory, not matched by above if
-            elif pattern == "/":
-                return False
+            ## entire session directory, not matched by above if
+            #elif pattern == "/":
+            #    return False
         return True
 
-    def _filterOutListing(self, downloadFiles, listingPath):
-        if not downloadFiles:
+    def _filterOutListing(self, filters, name):
+        if not filters:
             return False
-        for pattern in downloadFiles:
-            # part of pattern
-            if pattern.startswith(listingPath):
+        for pattern in filters:
+            # direct match
+            if pattern == name or pattern == f"{name}/":
                 return False
             # recursive folder match
-            elif pattern.endswith("/") and listingPath.startswith(pattern):
+            elif pattern.endswith("/") and name.startswith(pattern):
                 return False
         return True
 
@@ -623,10 +601,10 @@ class ARCRest:
                            .get("ComputingService", {}) \
                            .get("ComputingShare", [])
         if not compShares:
-            raise ARCError("No queues found on cluster")
+            return None
 
         # /rest/1.0 compatibility
-        if isinstance(compShares, dict):
+        if not isinstance(compShares, list):
             compShares = [compShares]
 
         for compShare in compShares:
@@ -651,7 +629,7 @@ class ARCRest:
                         .get("ApplicationEnvironment", [])
 
         # /rest/1.0 compatibility
-        if isinstance(appenvs, dict):
+        if not isinstance(appenvs, list):
             appenvs = [appenvs]
 
         runtimes = []
@@ -668,7 +646,7 @@ class ARCRest:
         import arc
         ceInfo = self.getCEInfo()
 
-        if delegationID is None:
+        if not delegationID:
             delegationID = self.createDelegation()
 
         # A list of tuples of index and input file dict for every job
@@ -743,7 +721,7 @@ class ARCRest:
 
         # submit jobs to ARC
         # TODO: handle exceptions
-        results = self.createJobs(bulkdesc, delegationID, queue)
+        results = self.createJobs(bulkdesc, queue, delegationID)
 
         uploadIXs = []  # a list of job indexes for proper result processing
         uploadIDs = []  # a list of jobids for which to upload files
@@ -761,7 +739,7 @@ class ARCRest:
 
         # upload jobs' local input data
         if uploadData:
-            errors = self.uploadJobFiles(uploadIDs, uploadInputs, workers=workers, blocksize=blocksize, timeout=timeout)
+            errors = self.uploadJobFiles(uploadIDs, uploadInputs, workers, blocksize, timeout)
             for jobix, uploadErrors in zip(uploadIXs, errors):
                 if uploadErrors:
                     jobid, state = resultDict[jobix]
@@ -790,79 +768,62 @@ class ARCRest:
                 continue
 
             try:
-                restClient.uploadFile(upload.url, upload.path)
+                restClient.uploadFile(upload.jobid, upload.name, upload.path)
             except Exception as exc:
                 upload.cancelEvent.set()
                 errorQueue.put({"jobid": upload.jobid, "error": exc})
-                logger.debug(f"Error uploading {upload.path} to {upload.url} for job {upload.jobid}: {exc}")
+                logger.debug(f"Error uploading {upload.path} for job {upload.jobid}: {exc}")
 
+    # TODO: add bail out parameter for cancelEvent?
     @classmethod
-    def _downloadTransferWorker(cls, restClient, transferQueue, errorQueue, downloadDir, downloadDict, logger=getNullLogger()):
+    def _downloadTransferWorker(cls, restClient, transferQueue, errorQueue, downloadDir, outputFilters={}, logger=getNullLogger()):
         while True:
             try:
                 transfer = transferQueue.get()
             except TransferQueueEmpty:
                 break
 
-            jobid = transfer.jobid
-            downloadFiles = downloadDict[jobid]
+            jobid, name, path = transfer.jobid, transfer.name, transfer.path
             if transfer.cancelEvent.is_set():
                 logger.debug(f"Skipping download for cancelled job {jobid}")
                 continue
 
             try:
                 if transfer.type in ("file", "diagnose"):
-                    # download file
-                    path = os.path.join(downloadDir, jobid, transfer.path)
-                    # TODO: Python >= 3.7
-                    #blocksize = restClient.httpClient.conn.blocksize
-                    blocksize = None
                     try:
-                        restClient.downloadFile(transfer.url, path, blocksize=blocksize)
+                        if transfer.type == "file":
+                            restClient.downloadFile(jobid, name, path)
+                        elif transfer.type == "diagnose":
+                            restClient.downloadDiagnoseFile(jobid, name, path)
                     except Exception as exc:
                         error = exc
                         if isinstance(exc, ARCHTTPError):
                             if exc.status == 404:
-                                if transfer.type == "diagnose":
-                                    error = MissingDiagnoseFile(transfer.url)
-                                else:
-                                    error = MissingOutputFile(transfer.url)
-                        else:
-                            transfer.cancelEvent.set()
+                                if transfer.type == "file":
+                                    error = MissingOutputFile(name)
+                                elif transfer.type == "diagnose":
+                                    error = MissingDiagnoseFile(name)
                         errorQueue.put({"jobid": jobid, "error": error})
-                        logger.debug(f"Download {transfer.url} to {path} for job {jobid} failed: {error}")
-
-                    else:
-                        logger.debug(f"Download {transfer.url} to {path} for job {jobid} successful")
+                        logger.error(f"Download {transfer.type} {name} to {path} for job {jobid} failed: {error}")
 
                 elif transfer.type == "listing":
-                    # download listing
                     try:
-                        listing = restClient.downloadListing(transfer.url)
-                    except ARCHTTPError as exc:
-                        # work around for invalid output in ARC 6
-                        if exc.text == "":
-                            listing = {}
-                        else:
-                            raise
+                        listing = restClient.downloadListing(jobid, name)
                     except Exception as exc:
-                        if not isinstance(exc, ARCHTTPError):
-                            transfer.cancelEvent.set()
                         errorQueue.put({"jobid": jobid, "error": exc})
-                        logger.debug(f"Download listing {transfer.url} for job {jobid} failed: {exc}")
+                        logger.error(f"Download listing {name} for job {jobid} failed: {exc}")
                     else:
+                        filters = outputFilters.get(jobid, [])
                         # create new transfer jobs
                         restClient._addTransfersFromListing(
-                            transferQueue, jobid, downloadFiles, listing, transfer.path, transfer.cancelEvent,
+                            transferQueue, jobid, filters, listing, name, path, transfer.cancelEvent,
                         )
-                        logger.debug(f"Download listing {transfer.url} for job {jobid} successful")
 
             # every possible exception needs to be handled, otherwise the
             # threads will lock up
             except:
                 import traceback
                 excstr = traceback.format_exc()
-                transfer.cancelEvent.set()
                 errorQueue.put({"jobid": jobid, "error": Exception(excstr)})
                 logger.debug(f"Download URL {transfer.url} and path {transfer.path} for job {jobid} failed: {excstr}")
 
@@ -936,44 +897,51 @@ class ARCRest:
 
     @classmethod
     def _parseJobInfo(cls, infoDocument):
-        info = {}
+        jobInfo = {}
         infoDict = infoDocument.get("ComputingActivity", {})
 
         COPY_KEYS = ["Name", "Type", "LocalIDFromManager", "Owner", "LocalOwner", "StdIn", "StdOut", "StdErr", "LogDir", "Queue"]
         for key in COPY_KEYS:
             if key in infoDict:
-                info[key] = infoDict[key]
+                jobInfo[key] = infoDict[key]
 
         INT_KEYS = ["UsedTotalWallTime", "UsedTotalCPUTime", "RequestedTotalWallTime", "RequestedTotalCPUTime", "RequestedSlots", "ExitCode", "WaitingPosition", "UsedMainMemory"]
         for key in INT_KEYS:
             if key in infoDict:
-                info[key] = int(infoDict[key])
+                jobInfo[key] = int(infoDict[key])
 
         TSTAMP_KEYS = ["SubmissionTime", "EndTime", "WorkingAreaEraseTime", "ProxyExpirationTime"]
         for key in TSTAMP_KEYS:
             if key in infoDict:
-                info[key] = datetime.datetime.strptime(infoDict[key], "%Y-%m-%dT%H:%M:%SZ")
+                jobInfo[key] = datetime.datetime.strptime(infoDict[key], "%Y-%m-%dT%H:%M:%SZ")
 
-        VARIABLE_KEYS = ["Error", "ExecutionNode", "RestartState"]
+        VARIABLE_KEYS = ["Error", "ExecutionNode"]
         for key in VARIABLE_KEYS:
             if key in infoDict:
+                jobInfo[key] = infoDict[key]
                 # /rest/1.0 compatibility
-                if isinstance(infoDict[key], list):
-                    info[key] = infoDict[key]
-                else:
-                    info[key] = [infoDict[key]]
+                if not isinstance(jobInfo[key], list):
+                    jobInfo[key] = [jobInfo[key]]
 
-        # get state from a list of activity states in different systems
-        for state in infoDict.get("State", []):
+        states = infoDict.get("State", [])
+        # /rest/1.0 compatibility
+        if not isinstance(states, list):
+            states = [states]
+        # get state from a list of states in different systems
+        for state in states:
             if state.startswith("arcrest:"):
-                info["State"] = state[len("arcrest:"):]
+                jobInfo["state"] = state[len("arcrest:"):]
 
-        # throw out all non ASCII characters from execution node strings
-        if "ExecutionNode" in infoDict:
-            for i in range(len(info["ExecutionNode"])):
-                info["ExecutionNode"][i] = ''.join([i for i in info["ExecutionNode"][i] if ord(i) < 128])
+        restartStates = infoDict.get("RestartState", [])
+        # /rest/1.0 compatibility
+        if not isinstance(restartStates, list):
+            restartStates = [restartStates]
+        # get restart state from a list of restart states in different systems
+        for state in restartStates:
+            if state.startswith("arcrest:"):
+                jobInfo["restartState"] = state[len("arcrest:"):]
 
-        return info
+        return jobInfo
 
     ### public static methods ###
 
@@ -1002,7 +970,7 @@ class ARCRest:
         if not apiVersions:
             raise ARCError("No supported API versions on CE")
 
-        if version is not None:
+        if version:
             if version not in IMPLEMENTED_VERSIONS:
                 raise ARCError(f"No client support for requested API version {version}")
             if version not in apiVersions:
@@ -1014,7 +982,7 @@ class ARCRest:
                 if version in IMPLEMENTED_VERSIONS:
                     apiVersion = version
                     break
-            if apiVersion is None:
+            if apiVersion:
                 raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
 
         logger.debug(f"API version {apiVersion} selected")
@@ -1041,7 +1009,7 @@ class ARCRest_1_0(ARCRest):
         jsonData = json.loads(text)
 
         # /rest/1.0 compatibility
-        if isinstance(jsonData["job"], dict):
+        if not isinstance(jsonData["job"], list):
             responses = [jsonData["job"]]
         else:
             responses = jsonData["job"]
@@ -1097,16 +1065,16 @@ class ARCRest_1_1(ARCRest):
         return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, blocksize, timeout)
 
 
-class FileTransfer:
+class Transfer:
 
-    def __init__(self, jobid, url, path, cancelEvent=None, type=None):
+    def __init__(self, jobid, name, path, type="file", cancelEvent=None):
         self.jobid = jobid
-        self.url = url
+        self.name = name
         self.path = path
-        self.cancelEvent = cancelEvent
-        if self.cancelEvent is None:
-            self.cancelEvent = threading.Event()
         self.type = type
+        self.cancelEvent = cancelEvent
+        if self.cancelEvent:
+            self.cancelEvent = threading.Event()
 
 
 class ARCJob:
