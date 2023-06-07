@@ -1056,18 +1056,7 @@ class ARCRest_1_0(ARCRest):
         return results
 
     def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
-        return self._submitJobs(
-            descs,
-            queue,
-            delegationID,
-            processDescs=processDescs,
-            matchDescs=matchDescs,
-            uploadData=uploadData,
-            workers=workers,
-            blocksize=blocksize,
-            timeout=timeout,
-            v1_0=True,
-        )
+        return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, blocksize, timeout, v1_0=True)
 
 
 class ARCRest_1_1(ARCRest):
@@ -1105,17 +1094,7 @@ class ARCRest_1_1(ARCRest):
         return results
 
     def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
-        return self._submitJobs(
-            descs,
-            queue,
-            delegationID,
-            processDescs=processDescs,
-            matchDescs=matchDescs,
-            uploadData=uploadData,
-            workers=workers,
-            blocksize=blocksize,
-            timeout=timeout,
-        )
+        return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, blocksize, timeout)
 
 
 class FileTransfer:
