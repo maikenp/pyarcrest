@@ -434,7 +434,18 @@ class ARCRest:
             raise ARCHTTPError(resp.status, text)
 
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        blocksize = self.httpClient.conn.blocksize
+
+        # python 3.6!!!!!!!!!!!!!!
+        # TODO: Should this be a standalone attribute of HTTPClient anyway?
+        #       Since blocksize is the size of the block output sending buffer
+        #       and is probably completely irrelevant to input buffer. Also,
+        #       the tuning capabilities would probably require separate
+        #       parameters for upload and download ...
+        try:
+            blocksize = self.httpClient.conn.blocksize
+        except:
+            blocksize = 8192
+
         with open(path, "wb") as f:
             data = resp.read(blocksize)
             while data:
