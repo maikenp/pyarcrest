@@ -1084,7 +1084,7 @@ class Transfer:
         self.path = path
         self.type = type
         self.cancelEvent = cancelEvent
-        if self.cancelEvent:
+        if not self.cancelEvent:
             self.cancelEvent = threading.Event()
 
 
