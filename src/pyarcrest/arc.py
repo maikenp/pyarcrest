@@ -574,8 +574,6 @@ class ARCRest:
         else:
             return jsonData["job"]
 
-    # TODO: should a bare slash be used for the entire session directory if
-    #       it can be done just by having empty filters?
     def _filterOutFile(self, filters, name):
         if not filters:
             return False
@@ -586,9 +584,9 @@ class ARCRest:
             # recursive folder match
             elif pattern.endswith("/") and name.startswith(pattern):
                 return False
-            ## entire session directory, not matched by above if
-            #elif pattern == "/":
-            #    return False
+            # entire session directory, not matched by above if
+            elif pattern == "/":
+                return False
         return True
 
     def _filterOutListing(self, filters, name):
