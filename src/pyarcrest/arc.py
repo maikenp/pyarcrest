@@ -519,33 +519,31 @@ class ARCRest:
     # When name is "", it means the root of the session dir. In this case,
     # slash must not be added to it.
     def _addTransfersFromListing(self, transferQueue, jobid, filters, listing, name, path, cancelEvent):
-        if "file" in listing:
-            # /rest/1.0 compatibility
-            if not isinstance(listing["file"], list):
-                listing["file"] = [listing["file"]]
+        files = listing.get("file", [])
+        # /rest/1.0 compatibility
+        if not isinstance(files, list):
+            files = [files]
+        for f in files:
+            newpath = os.path.join(path, f)
+            if name:
+                newname = f"{name}/{f}"
+            else:
+                newname = f
+            if not self._filterOutFile(filters, newname):
+                transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="file"))
 
-            for f in listing["file"]:
-                newpath = os.path.join(path, f)
-                if name:
-                    newname = f"{name}/{f}"
-                else:
-                    newname = f
-                if not self._filterOutFile(filters, newname):
-                    transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="file"))
-
-        if "dir" in listing:
-            # /rest/1.0 compatibility
-            if not isinstance(listing["dir"], list):
-                listing["dir"] = [listing["dir"]]
-
-            for d in listing["dir"]:
-                newpath = os.path.join(path, d)
-                if name:
-                    newname = f"{name}/{d}"
-                else:
-                    newname = d
-                if not self._filterOutListing(filters, newname):
-                    transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="listing"))
+        dirs = listing.get("dirs", [])
+        # /rest/1.0 compatibility
+        if not isinstance(dirs, list):
+            dirs = [dirs]
+        for d in dirs:
+            newpath = os.path.join(path, d)
+            if name:
+                newname = f"{name}/{d}"
+            else:
+                newname = d
+            if not self._filterOutListing(filters, newname):
+                transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="listing"))
 
     def _requestJSON(self, *args, **kwargs):
         return self._requestJSONStatic(self.httpClient, *args, **kwargs)
