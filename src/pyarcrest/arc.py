@@ -836,7 +836,7 @@ class ARCRest:
                 import traceback
                 excstr = traceback.format_exc()
                 errorQueue.put({"jobid": jobid, "error": Exception(excstr)})
-                logger.debug(f"Download URL {transfer.url} and path {transfer.path} for job {jobid} failed: {excstr}")
+                logger.debug(f"Download name {name} and path {path} for job {jobid} failed: {excstr}")
 
     @classmethod
     def _getArclibInputFiles(cls, desc):
