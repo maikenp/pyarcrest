@@ -510,7 +510,7 @@ class ARCRest:
         for diagFile in diagnoseList:
             if diagFile not in self.DIAGNOSE_FILES:
                 raise ARCError(f"Invalid diagnose file name {diagFile}")
-            path = os.path.join(downloadDir, diagnoseDir, diagFile)
+            path = os.path.join(downloadDir, jobid, diagnoseDir, diagFile)
             transfers.append(Transfer(jobid, diagFile, path, type="diagnose", cancelEvent=cancelEvent))
         # no exception raised, add transfers to queue
         for transfer in transfers:
