@@ -333,7 +333,7 @@ class ARCRest:
                 continue
             # add job session directory as a listing transfer
             path = os.path.join(downloadDir, jobid)
-            transferQueue.put(Transfer(jobid, "", path, cancelEvent=cancelEvent, type="listing"))
+            transferQueue.put(Transfer(jobid, "", path, type="listing", cancelEvent=cancelEvent))
 
         errorQueue = queue.Queue()
 
@@ -530,7 +530,7 @@ class ARCRest:
             else:
                 newname = f
             if not self._filterOutFile(filters, newname):
-                transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="file"))
+                transferQueue.put(Transfer(jobid, newname, newpath, type="file", cancelEvent=cancelEvent))
 
         dirs = listing.get("dirs", [])
         # /rest/1.0 compatibility
@@ -543,7 +543,7 @@ class ARCRest:
             else:
                 newname = d
             if not self._filterOutListing(filters, newname):
-                transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="listing"))
+                transferQueue.put(Transfer(jobid, newname, newpath, type="listing", cancelEvent=cancelEvent))
 
     def _requestJSON(self, *args, **kwargs):
         return self._requestJSONStatic(self.httpClient, *args, **kwargs)
