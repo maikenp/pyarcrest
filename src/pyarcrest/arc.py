@@ -529,7 +529,7 @@ class ARCRest:
                 if name:
                     newname = f"{name}/{f}"
                 else:
-                    newpath = f
+                    newname = f
                 if not self._filterOutFile(filters, newname):
                     transferQueue.put(Transfer(jobid, newname, newpath, cancelEvent, type="file"))
 
