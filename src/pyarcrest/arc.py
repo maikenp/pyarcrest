@@ -476,6 +476,53 @@ class ARCRest:
             if walltime > maxWallTime:
                 raise MatchmakingError(f"Walltime {walltime} higher than max walltime {maxWallTime} for queue {queue}")
 
+    def _findQueue(self, ceInfo, queue):
+        compShares = ceInfo.get("Domains", {}) \
+                           .get("AdminDomain", {}) \
+                           .get("Services", {}) \
+                           .get("ComputingService", {}) \
+                           .get("ComputingShare", [])
+        if not compShares:
+            return None
+
+        # /rest/1.0 compatibility
+        if not isinstance(compShares, list):
+            compShares = [compShares]
+
+        for compShare in compShares:
+            if compShare.get("Name", None) == queue:
+                # Queues are defined as ComputingShares. There are some shares
+                # that are mapped to another share. Such a share is never a
+                # queue externally. So if the name of the such share is used as
+                # a queue, the result has to be empty.
+                if "MappingPolicy" in compShare:
+                    return None
+                else:
+                    return compShare
+        return None
+
+    def _findRuntimes(self, ceInfo):
+        appenvs = ceInfo.get("Domains", {}) \
+                        .get("AdminDomain", {}) \
+                        .get("Services", {}) \
+                        .get("ComputingService", {}) \
+                        .get("ComputingManager", {}) \
+                        .get("ApplicationEnvironments", {}) \
+                        .get("ApplicationEnvironment", [])
+
+        # /rest/1.0 compatibility
+        if not isinstance(appenvs, list):
+            appenvs = [appenvs]
+
+        runtimes = []
+        for env in appenvs:
+            if "AppName" in env:
+                envname = env["AppName"]
+                if "AppVersion" in env:
+                    envname += f"-{env['AppVersion']}"
+                runtimes.append(envname)
+        return runtimes
+
     def _signCSR(self, csrStr, lifetime=None):
         with open(self.httpClient.proxypath) as f:
             proxyStr = f.read()
@@ -545,6 +592,33 @@ class ARCRest:
             if not self._filterOutListing(filters, newname):
                 transferQueue.put(Transfer(jobid, newname, newpath, type="listing", cancelEvent=cancelEvent))
 
+    def _filterOutFile(self, filters, name):
+        if not filters:
+            return False
+        for pattern in filters:
+            # direct match
+            if pattern == name:
+                return False
+            # recursive folder match
+            elif pattern.endswith("/") and name.startswith(pattern):
+                return False
+            # entire session directory, not matched by above if
+            elif pattern == "/":
+                return False
+        return True
+
+    def _filterOutListing(self, filters, name):
+        if not filters:
+            return False
+        for pattern in filters:
+            # direct match
+            if pattern == name or pattern == f"{name}/":
+                return False
+            # recursive folder match
+            elif pattern.endswith("/") and name.startswith(pattern):
+                return False
+        return True
+
     def _requestJSON(self, *args, **kwargs):
         return self._requestJSONStatic(self.httpClient, *args, **kwargs)
 
@@ -573,80 +647,6 @@ class ARCRest:
             return [jsonData["job"]]
         else:
             return jsonData["job"]
-
-    def _filterOutFile(self, filters, name):
-        if not filters:
-            return False
-        for pattern in filters:
-            # direct match
-            if pattern == name:
-                return False
-            # recursive folder match
-            elif pattern.endswith("/") and name.startswith(pattern):
-                return False
-            # entire session directory, not matched by above if
-            elif pattern == "/":
-                return False
-        return True
-
-    def _filterOutListing(self, filters, name):
-        if not filters:
-            return False
-        for pattern in filters:
-            # direct match
-            if pattern == name or pattern == f"{name}/":
-                return False
-            # recursive folder match
-            elif pattern.endswith("/") and name.startswith(pattern):
-                return False
-        return True
-
-    def _findQueue(self, ceInfo, queue):
-        compShares = ceInfo.get("Domains", {}) \
-                           .get("AdminDomain", {}) \
-                           .get("Services", {}) \
-                           .get("ComputingService", {}) \
-                           .get("ComputingShare", [])
-        if not compShares:
-            return None
-
-        # /rest/1.0 compatibility
-        if not isinstance(compShares, list):
-            compShares = [compShares]
-
-        for compShare in compShares:
-            if compShare.get("Name", None) == queue:
-                # Queues are defined as ComputingShares. There are some shares
-                # that are mapped to another share. Such a share is never a
-                # queue externally. So if the name of the such share is used as
-                # a queue, the result has to be empty.
-                if "MappingPolicy" in compShare:
-                    return None
-                else:
-                    return compShare
-        return None
-
-    def _findRuntimes(self, ceInfo):
-        appenvs = ceInfo.get("Domains", {}) \
-                        .get("AdminDomain", {}) \
-                        .get("Services", {}) \
-                        .get("ComputingService", {}) \
-                        .get("ComputingManager", {}) \
-                        .get("ApplicationEnvironments", {}) \
-                        .get("ApplicationEnvironment", [])
-
-        # /rest/1.0 compatibility
-        if not isinstance(appenvs, list):
-            appenvs = [appenvs]
-
-        runtimes = []
-        for env in appenvs:
-            if "AppName" in env:
-                envname = env["AppName"]
-                if "AppVersion" in env:
-                    envname += f"-{env['AppVersion']}"
-                runtimes.append(envname)
-        return runtimes
 
     # TODO: think about what to log and how
     def _submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None, v1_0=False):
@@ -753,13 +753,6 @@ class ARCRest:
                     resultDict[jobix] = [InputUploadError(jobid, state, uploadErrors)]
 
         return [resultDict[i] for i in range(len(descs))]
-
-    @classmethod
-    def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
-        headers["Accept"] = "application/json"
-        resp = httpClient.request(*args, headers=headers, **kwargs)
-        text = resp.read().decode()
-        return resp.status, text
 
     @classmethod
     def _uploadTransferWorker(cls, restClient, uploadQueue, errorQueue, log=getNullLogger()):
@@ -964,6 +957,13 @@ class ARCRest:
             return [apiVersions["version"]]
         else:
             return apiVersions["version"]
+
+    @classmethod
+    def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
+        headers["Accept"] = "application/json"
+        resp = httpClient.request(*args, headers=headers, **kwargs)
+        text = resp.read().decode()
+        return resp.status, text
 
     @classmethod
     def getClient(cls, url=None, host=None, port=None, proxypath=None, log=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex"):
