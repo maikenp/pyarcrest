@@ -47,7 +47,7 @@ class ARCRest:
         "output_status", "statistics"
     ]
 
-    def __init__(self, httpClient, apiBase="/arex", logger=getNullLogger()):
+    def __init__(self, httpClient, apiBase="/arex", log=getNullLogger()):
         """
         Initialize the base object.
 
@@ -55,7 +55,7 @@ class ARCRest:
         additional implementations of attributes and methods are required from
         derived classes.
         """
-        self.logger = logger
+        self.log = log
         self.apiBase = apiBase
         self.httpClient = httpClient
 
@@ -270,10 +270,10 @@ class ARCRest:
                 self._addInputTransfers(uploadQueue, jobid, inputFiles)
             except InputFileError as exc:
                 resultDict[jobid].append(exc)
-                self.logger.debug(f"Skipping job {jobid} due to input file error: {exc}")
+                self.log.debug(f"Skipping job {jobid} due to input file error: {exc}")
 
         if uploadQueue.empty():
-            self.logger.debug("No local inputs to upload")
+            self.log.debug("No local inputs to upload")
             return [resultDict[jobid] for jobid in jobids]
 
         errorQueue = queue.Queue()
@@ -286,13 +286,13 @@ class ARCRest:
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
                 proxypath=self.httpClient.proxypath,
-                logger=self.logger,
+                log=self.log,
                 blocksize=blocksize,
                 timeout=timeout,
                 apiBase=self.apiBase,
                 version=self.version,
             ))
-        self.logger.debug(f"Created {len(restClients)} upload workers")
+        self.log.debug(f"Created {len(restClients)} upload workers")
 
         # run upload threads on upload queue
         with concurrent.futures.ThreadPoolExecutor(max_workers=numWorkers) as pool:
@@ -303,7 +303,7 @@ class ARCRest:
                     restClient,
                     uploadQueue,
                     errorQueue,
-                    logger=self.logger,
+                    log=self.log,
                 ))
             concurrent.futures.wait(futures)
 
@@ -344,14 +344,14 @@ class ARCRest:
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
                 proxypath=self.httpClient.proxypath,
-                logger=self.logger,
+                log=self.log,
                 blocksize=blocksize,
                 timeout=timeout,
                 apiBase=self.apiBase,
                 version=self.version,
             ))
 
-        self.logger.debug(f"Created {len(restClients)} download workers")
+        self.log.debug(f"Created {len(restClients)} download workers")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             futures = []
@@ -363,7 +363,7 @@ class ARCRest:
                     errorQueue,
                     downloadDir,
                     outputFilters,
-                    self.logger,
+                    self.log,
                 ))
             concurrent.futures.wait(futures)
 
@@ -762,7 +762,7 @@ class ARCRest:
         return resp.status, text
 
     @classmethod
-    def _uploadTransferWorker(cls, restClient, uploadQueue, errorQueue, logger=getNullLogger()):
+    def _uploadTransferWorker(cls, restClient, uploadQueue, errorQueue, log=getNullLogger()):
         while True:
             try:
                 upload = uploadQueue.get(block=False)
@@ -771,7 +771,7 @@ class ARCRest:
             uploadQueue.task_done()
 
             if upload.cancelEvent.is_set():
-                logger.debug(f"Skipping upload for cancelled job {upload.jobid}")
+                log.debug(f"Skipping upload for cancelled job {upload.jobid}")
                 continue
 
             try:
@@ -779,11 +779,11 @@ class ARCRest:
             except Exception as exc:
                 upload.cancelEvent.set()
                 errorQueue.put({"jobid": upload.jobid, "error": exc})
-                logger.debug(f"Error uploading {upload.path} for job {upload.jobid}: {exc}")
+                log.debug(f"Error uploading {upload.path} for job {upload.jobid}: {exc}")
 
     # TODO: add bail out parameter for cancelEvent?
     @classmethod
-    def _downloadTransferWorker(cls, restClient, transferQueue, errorQueue, downloadDir, outputFilters={}, logger=getNullLogger()):
+    def _downloadTransferWorker(cls, restClient, transferQueue, errorQueue, downloadDir, outputFilters={}, log=getNullLogger()):
         while True:
             try:
                 transfer = transferQueue.get()
@@ -792,7 +792,7 @@ class ARCRest:
 
             jobid, name, path = transfer.jobid, transfer.name, transfer.path
             if transfer.cancelEvent.is_set():
-                logger.debug(f"Skipping download for cancelled job {jobid}")
+                log.debug(f"Skipping download for cancelled job {jobid}")
                 continue
 
             try:
@@ -811,14 +811,14 @@ class ARCRest:
                                 elif transfer.type == "diagnose":
                                     error = MissingDiagnoseFile(name)
                         errorQueue.put({"jobid": jobid, "error": error})
-                        logger.error(f"Download {transfer.type} {name} to {path} for job {jobid} failed: {error}")
+                        log.error(f"Download {transfer.type} {name} to {path} for job {jobid} failed: {error}")
 
                 elif transfer.type == "listing":
                     try:
                         listing = restClient.downloadListing(jobid, name)
                     except Exception as exc:
                         errorQueue.put({"jobid": jobid, "error": exc})
-                        logger.error(f"Download listing {name} for job {jobid} failed: {exc}")
+                        log.error(f"Download listing {name} for job {jobid} failed: {exc}")
                     else:
                         filters = outputFilters.get(jobid, [])
                         # create new transfer jobs
@@ -832,7 +832,7 @@ class ARCRest:
                 import traceback
                 excstr = traceback.format_exc()
                 errorQueue.put({"jobid": jobid, "error": Exception(excstr)})
-                logger.debug(f"Download name {name} and path {path} for job {jobid} failed: {excstr}")
+                log.debug(f"Download name {name} and path {path} for job {jobid} failed: {excstr}")
 
     @classmethod
     def _getArclibInputFiles(cls, desc):
@@ -966,13 +966,13 @@ class ARCRest:
             return apiVersions["version"]
 
     @classmethod
-    def getClient(cls, url=None, host=None, port=None, proxypath=None, logger=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex"):
+    def getClient(cls, url=None, host=None, port=None, proxypath=None, log=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex"):
         IMPLEMENTED_VERSIONS = {
             "1.0": ARCRest_1_0,
             "1.1": ARCRest_1_1,
         }
 
-        httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, logger=logger, blocksize=blocksize, timeout=timeout)
+        httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, log=log, blocksize=blocksize, timeout=timeout)
         apiVersions = cls.getAPIVersionsStatic(httpClient, apiBase=apiBase)
         if not apiVersions:
             raise ARCError("No supported API versions on CE")
@@ -992,8 +992,8 @@ class ARCRest:
             if not apiVersion:
                 raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
 
-        logger.debug(f"API version {apiVersion} selected")
-        return IMPLEMENTED_VERSIONS[apiVersion](httpClient, apiBase=apiBase, logger=logger)
+        log.debug(f"API version {apiVersion} selected")
+        return IMPLEMENTED_VERSIONS[apiVersion](httpClient, apiBase=apiBase, log=log)
 
 
 class ARCRest_1_0(ARCRest):

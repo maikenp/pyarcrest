@@ -59,13 +59,13 @@ def main():
 
     kwargs = {}
     if args.verbose:
-        logger = logging.getLogger()
+        log = logging.getLogger()
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
-        logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
-        kwargs["logger"] = logging.getLogger()
+        log.addHandler(handler)
+        log.setLevel(logging.DEBUG)
+        kwargs["log"] = logging.getLogger()
     arcrest = ARCRest.getClient(url=args.cluster, proxypath=args.proxy, **kwargs)
 
     if args.command == "jobs" and args.jobs == "list":

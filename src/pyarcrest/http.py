@@ -10,9 +10,9 @@ from pyarcrest.errors import HTTPClientError
 # TODO: blocksize is not used until Python 3.7 becomes minimum version
 class HTTPClient:
 
-    def __init__(self, url=None, host=None, port=None, proxypath=None, logger=getNullLogger(), blocksize=None, timeout=None, isHTTPS=True):
+    def __init__(self, url=None, host=None, port=None, proxypath=None, log=getNullLogger(), blocksize=None, timeout=None, isHTTPS=True):
         """Process parameters and create HTTP connection."""
-        self.logger = logger
+        self.log = log
 
         if url:
             parts = urlparse(url)
@@ -86,7 +86,7 @@ class HTTPClient:
             url = endpoint
 
         try:
-            self.logger.debug(f"{method} {url} headers={headers}")
+            self.log.debug(f"{method} {url} headers={headers}")
             self.conn.request(method, url, body=body, headers=headers)
             resp = self.conn.getresponse()
         # TODO: should the request be retried for aborted connection by peer?
