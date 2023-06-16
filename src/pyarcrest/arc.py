@@ -424,7 +424,64 @@ class ARCRest:
 
         return errors
 
-    ### Private support methods
+    ### Static operations ###
+
+    @classmethod
+    def getAPIVersionsStatic(cls, httpClient, apiBase="/arex"):
+        status, text = cls._requestJSONStatic(httpClient, "GET", f"{apiBase}/rest")
+        if status != 200:
+            raise ARCHTTPError(status, text)
+        apiVersions = json.loads(text)
+
+        # /rest/1.0 compatibility
+        if not isinstance(apiVersions["version"], list):
+            return [apiVersions["version"]]
+        else:
+            return apiVersions["version"]
+
+    # TODO: explain the rationale in documentation about the design of the API
+    #       version selection mechanism:
+    #       - specific API implementations are in classes
+    #       - classes cannot be used as values in class variables or method
+    #         parameters without the proper ordering of definitions which is
+    #         awkward and inflexible
+    @classmethod
+    def getClient(cls, url=None, host=None, port=None, proxypath=None, log=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex", impls=None):
+        httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, log=log, blocksize=blocksize, timeout=timeout)
+
+        # get API version to implementation class mapping
+        implementations = impls
+        if not implementations:
+            implementations = cls._getImplementations()
+
+        # get API versions from CE
+        apiVersions = cls.getAPIVersionsStatic(httpClient, apiBase=apiBase)
+        if not apiVersions:
+            raise ARCError("No supported API versions on CE")
+
+        # determine the API version to be used based on available
+        # implementations and available versions on ARC CE
+        if version:
+            if version not in implementations:
+                raise ARCError(f"No client support for requested API version {version}")
+            if version not in apiVersions:
+                raise ARCError(f"API version {version} not among CE supported API versions {apiVersions}")
+            apiVersion = version
+        else:
+            # get the highest version of client implementation supported on the
+            # ARC CE
+            apiVersion = None
+            for version in reversed(apiVersions):
+                if version in implementations:
+                    apiVersion = version
+                    break
+            if not apiVersion:
+                raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
+
+        log.debug(f"API version {apiVersion} selected")
+        return implementations[apiVersion](httpClient, apiBase=apiBase, log=log)
+
+    ### Support methods ###
 
     def _downloadURL(self, url, path):
         resp = self.httpClient.request("GET", url)
@@ -754,6 +811,19 @@ class ARCRest:
 
         return [resultDict[i] for i in range(len(descs))]
 
+    ### Static support methods ###
+
+    @classmethod
+    def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
+        headers["Accept"] = "application/json"
+        resp = httpClient.request(*args, headers=headers, **kwargs)
+        text = resp.read().decode()
+        return resp.status, text
+
+    @classmethod
+    def _getImplementations(cls):
+        return {"1.0": ARCRest_1_0, "1.1": ARCRest_1_1}
+
     @classmethod
     def _uploadTransferWorker(cls, restClient, uploadQueue, errorQueue, log=getNullLogger()):
         while True:
@@ -942,74 +1012,6 @@ class ARCRest:
                 jobInfo["restartState"] = state[len("arcrest:"):]
 
         return jobInfo
-
-    ### public static methods ###
-
-    @classmethod
-    def getAPIVersionsStatic(cls, httpClient, apiBase="/arex"):
-        status, text = cls._requestJSONStatic(httpClient, "GET", f"{apiBase}/rest")
-        if status != 200:
-            raise ARCHTTPError(status, text)
-        apiVersions = json.loads(text)
-
-        # /rest/1.0 compatibility
-        if not isinstance(apiVersions["version"], list):
-            return [apiVersions["version"]]
-        else:
-            return apiVersions["version"]
-
-    @classmethod
-    def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
-        headers["Accept"] = "application/json"
-        resp = httpClient.request(*args, headers=headers, **kwargs)
-        text = resp.read().decode()
-        return resp.status, text
-
-    @classmethod
-    def _getImplementations(cls):
-        return {"1.0": ARCRest_1_0, "1.1": ARCRest_1_1}
-
-    # TODO: explain the rationale in documentation about the design of the API
-    #       version selection mechanism:
-    #       - specific API implementations are in classes
-    #       - classes cannot be used as values in class variables or method
-    #         parameters without the proper ordering of definitions which is
-    #         awkward and inflexible
-    @classmethod
-    def getClient(cls, url=None, host=None, port=None, proxypath=None, log=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex", impls=None):
-        httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, log=log, blocksize=blocksize, timeout=timeout)
-
-        # get API version to implementation class mapping
-        implementations = impls
-        if not implementations:
-            implementations = cls._getImplementations()
-
-        # get API versions from CE
-        apiVersions = cls.getAPIVersionsStatic(httpClient, apiBase=apiBase)
-        if not apiVersions:
-            raise ARCError("No supported API versions on CE")
-
-        # determine the API version to be used based on available
-        # implementations and available versions on ARC CE
-        if version:
-            if version not in implementations:
-                raise ARCError(f"No client support for requested API version {version}")
-            if version not in apiVersions:
-                raise ARCError(f"API version {version} not among CE supported API versions {apiVersions}")
-            apiVersion = version
-        else:
-            # get the highest version of client implementation supported on the
-            # ARC CE
-            apiVersion = None
-            for version in reversed(apiVersions):
-                if version in implementations:
-                    apiVersion = version
-                    break
-            if not apiVersion:
-                raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
-
-        log.debug(f"API version {apiVersion} selected")
-        return implementations[apiVersion](httpClient, apiBase=apiBase, log=log)
 
 
 class ARCRest_1_0(ARCRest):
