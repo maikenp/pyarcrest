@@ -219,8 +219,8 @@ class ARCRest:
 
     # Returns a tuple of CSR and delegation ID
     def requestNewDelegation(self):
-        url = f"{self.apiPath}/delegations?action=new"
-        resp = self.httpClient.request("POST", url)
+        url = f"{self.apiPath}/delegations"
+        resp = self.httpClient.request("POST", url, params={"action": "new"})
         respstr = resp.read().decode()
         if resp.status != 201:
             raise ARCHTTPError(resp.status, respstr)
@@ -235,8 +235,8 @@ class ARCRest:
             raise ARCHTTPError(resp.status, respstr)
 
     def getDelegationCert(self, delegationID):
-        url = f"{self.apiPath}/delegations/{delegationID}?action=get"
-        resp = self.httpClient.request("POST", url)
+        url = f"{self.apiPath}/delegations/{delegationID}"
+        resp = self.httpClient.request("POST", url, params={"action": "get"})
         respstr = resp.read().decode()
         if resp.status != 200:
             raise ARCHTTPError(resp.status, respstr)
@@ -244,16 +244,16 @@ class ARCRest:
 
     # returns CSR
     def requestDelegationRenewal(self, delegationID):
-        url = f"{self.apiPath}/delegations/{delegationID}?action=renew"
-        resp = self.httpClient.request("POST", url)
+        url = f"{self.apiPath}/delegations/{delegationID}"
+        resp = self.httpClient.request("POST", url, params={"action": "renew"})
         respstr = resp.read().decode()
         if resp.status != 201:
             raise ARCHTTPError(resp.status, respstr)
         return respstr
 
     def deleteDelegation(self, delegationID):
-        url = f"{self.apiPath}/delegations/{delegationID}?action=delete"
-        resp = self.httpClient.request("POST", url)
+        url = f"{self.apiPath}/delegations/{delegationID}"
+        resp = self.httpClient.request("POST", url, params={"action": "delete"})
         respstr = resp.read().decode()
         if resp.status != 200:
             raise ARCHTTPError(resp.status, respstr)
@@ -693,8 +693,8 @@ class ARCRest:
             jsonData = {"job": tomanage}
 
         # execute action and get JSON result
-        url = f"{self.apiPath}/jobs?action={action}"
-        status, text = self._requestJSON("POST", url, jsonData=jsonData)
+        url = f"{self.apiPath}/jobs"
+        status, text = self._requestJSON("POST", url, jsonData=jsonData, params={"action": action})
         if status != 201:
             raise ARCHTTPError(status, text)
         jsonData = json.loads(text)
@@ -1025,9 +1025,10 @@ class ARCRest_1_0(ARCRest):
         contentType = "application/xml" if isADL else "application/rsl"
         status, text = self._requestJSON(
             "POST",
-            f"{self.apiPath}/jobs?action=new",
+            f"{self.apiPath}/jobs",
             data=description,
             headers={"Content-Type": contentType},
+            params={"action": "new"},
         )
         if status != 201:
             raise ARCHTTPError(status, text)
