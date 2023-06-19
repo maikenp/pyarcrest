@@ -59,7 +59,6 @@ class HTTPClient:
             self.conn = HTTPConnection(host, port=port, **kwargs)
 
         self.isHTTPS = useHTTPS
-        self.proxypath = proxypath
 
     def request(self, method, endpoint, headers={}, token=None, jsonData=None, data=None, params={}):
         """Send request and retry on ConnectionErrors."""

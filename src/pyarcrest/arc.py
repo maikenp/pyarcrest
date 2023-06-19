@@ -47,7 +47,7 @@ class ARCRest:
         "output_status", "statistics"
     ]
 
-    def __init__(self, httpClient, apiBase="/arex", log=getNullLogger()):
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger()):
         """
         Initialize the base object.
 
@@ -55,9 +55,13 @@ class ARCRest:
         additional implementations of attributes and methods are required from
         derived classes.
         """
-        self.log = log
-        self.apiBase = apiBase
+        if not token and not proxypath:
+            raise ARCError("One of either token or proxy path is required for authentication")
         self.httpClient = httpClient
+        self.token = token
+        self.proxypath = proxypath
+        self.apiBase = apiBase
+        self.log = log
 
     def close(self):
         self.httpClient.close()
@@ -65,16 +69,16 @@ class ARCRest:
     ### Direct operations on ARC CE ###
 
     def getAPIVersions(self):
-        return self.getAPIVersionsStatic(self.httpClient, self.apiBase)
+        return self.getAPIVersionsStatic(self.httpClient, self.apiBase, self.token)
 
     def getCEInfo(self):
-        status, text = self._requestJSON("GET", f"{self.apiPath}/info")
+        status, text = self._requestJSON("GET", "/info")
         if status != 200:
             raise ARCHTTPError(status, text)
         return json.loads(text)
 
     def getJobsList(self):
-        status, text = self._requestJSON("GET", f"{self.apiPath}/jobs")
+        status, text = self._requestJSON("GET", "/jobs")
         if status != 200:
             raise ARCHTTPError(status, text)
 
@@ -171,19 +175,18 @@ class ARCRest:
         return results
 
     def downloadFile(self, jobid, sessionPath, filePath):
-        urlPath = f"{self.apiPath}/jobs/{jobid}/session/{sessionPath}"
-        self._downloadURL(urlPath, filePath)
+        self._downloadURL(f"/jobs/{jobid}/session/{sessionPath}", filePath)
 
     def uploadFile(self, jobid, sessionPath, filePath):
-        urlPath = f"{self.apiPath}/jobs/{jobid}/session/{sessionPath}"
+        urlPath = f"/jobs/{jobid}/session/{sessionPath}"
         with open(filePath, "rb") as f:
-            resp = self.httpClient.request("PUT", urlPath, data=f)
+            resp = self._request("PUT", urlPath, data=f)
             text = resp.read().decode()
             if resp.status != 200:
                 raise ARCHTTPError(resp.status, text)
 
     def downloadListing(self, jobid, sessionPath):
-        urlPath = f"{self.apiPath}/jobs/{jobid}/session/{sessionPath}"
+        urlPath = f"/jobs/{jobid}/session/{sessionPath}"
         status, text = self._requestJSON("GET", urlPath)
         if status != 200:
             raise ARCHTTPError(status, text)
@@ -200,11 +203,17 @@ class ARCRest:
     def downloadDiagnoseFile(self, jobid, name, path):
         if name not in self.DIAGNOSE_FILES:
             raise ARCError(f"Invalid control dir file requested: {name}")
-        urlPath = f"{self.apiPath}/jobs/{jobid}/diagnose/{name}"
+        urlPath = f"/jobs/{jobid}/diagnose/{name}"
         self._downloadURL(urlPath, path)
 
-    def getDelegationsList(self):
-        status, text = self._requestJSON("GET", f"{self.apiPath}/delegations")
+    def getDelegationsList(self, type=None):
+        params = {}
+        if type:
+            if type not in ("x509", "jwt"):
+                raise ARCError(f"Invalid type parameter: {type}")
+            else:
+                params["type"] = type
+        status, text = self._requestJSON("GET", "/delegations", params=params)
         if status != 200:
             raise ARCHTTPError(status, text)
 
@@ -217,43 +226,66 @@ class ARCRest:
             else:
                 raise
 
-    # Returns a tuple of CSR and delegation ID
-    def requestNewDelegation(self):
-        url = f"{self.apiPath}/delegations"
-        resp = self.httpClient.request("POST", url, params={"action": "new"})
+    # TODO: document: token parameter and attribute take priority while proxy
+    #       is the default
+    #
+    # Token functionality is implemented in the base class as both auth methods
+    # will be supported in the future. The specific implementation of 1.0
+    # version will override the behavior. This is probably better than
+    # 1.1 being in specific class.
+    #
+    # token parameter allows delegation creation from non-attribute tokens.
+    #
+    # Returns a tuple of delegation ID and CSR (if using cert delegations,
+    # otherwise the second value is None and can be ignored).
+    def newDelegation(self):
+        headers = {}
+        params = {"action": "new"}
+        if self.token:
+            headers["X-Delegation"] = f"Bearer {self.token}"
+            params["type"] = "jwt"
+        resp = self._request("POST", "/delegations", headers=headers, params=params)
         respstr = resp.read().decode()
         if resp.status != 201:
             raise ARCHTTPError(resp.status, respstr)
-        return respstr, resp.getheader("Location").split("/")[-1]
+        if self.token:
+            respstr = None
+        return resp.getheader("Location").split("/")[-1], respstr
 
-    def uploadDelegation(self, delegationID, signedCert):
-        url = f"{self.apiPath}/delegations/{delegationID}"
+    def uploadCertDelegation(self, delegationID, cert):
+        url = f"/delegations/{delegationID}"
         headers = {"Content-Type": "application/x-pem-file"}
-        resp = self.httpClient.request("PUT", url, data=signedCert, headers=headers)
+        resp = self._request("PUT", url, data=cert, headers=headers)
         respstr = resp.read().decode()
         if resp.status != 200:
             raise ARCHTTPError(resp.status, respstr)
 
-    def getDelegationCert(self, delegationID):
-        url = f"{self.apiPath}/delegations/{delegationID}"
-        resp = self.httpClient.request("POST", url, params={"action": "get"})
+    def getDelegation(self, delegationID):
+        url = f"/delegations/{delegationID}"
+        resp = self._request("POST", url, params={"action": "get"})
         respstr = resp.read().decode()
         if resp.status != 200:
             raise ARCHTTPError(resp.status, respstr)
         return respstr
 
-    # returns CSR
-    def requestDelegationRenewal(self, delegationID):
-        url = f"{self.apiPath}/delegations/{delegationID}"
-        resp = self.httpClient.request("POST", url, params={"action": "renew"})
+    # returns CSR if proxy cert is used, None otherwise
+    def renewDelegation(self, delegationID):
+        headers = {}
+        params = {"action": "renew"}
+        if self.token:
+            headers["X-Delegation"] = f"Bearer {self.token}"
+        url = f"/delegations/{delegationID}"
+        resp = self._request("POST", url, headers=headers, params=params)
         respstr = resp.read().decode()
         if resp.status != 201:
             raise ARCHTTPError(resp.status, respstr)
+        if self.token:
+            respstr = None
         return respstr
 
     def deleteDelegation(self, delegationID):
-        url = f"{self.apiPath}/delegations/{delegationID}"
-        resp = self.httpClient.request("POST", url, params={"action": "delete"})
+        url = f"/delegations/{delegationID}"
+        resp = self._request("POST", url, params={"action": "delete"})
         respstr = resp.read().decode()
         if resp.status != 200:
             raise ARCHTTPError(resp.status, respstr)
@@ -285,7 +317,8 @@ class ARCRest:
             restClients.append(self.getClient(
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
-                proxypath=self.httpClient.proxypath,
+                token=self.token,
+                proxypath=self.proxypath,
                 log=self.log,
                 blocksize=blocksize,
                 timeout=timeout,
@@ -343,7 +376,8 @@ class ARCRest:
             restClients.append(self.getClient(
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
-                proxypath=self.httpClient.proxypath,
+                token=self.token,
+                proxypath=self.proxypath,
                 log=self.log,
                 blocksize=blocksize,
                 timeout=timeout,
@@ -378,24 +412,27 @@ class ARCRest:
 
         return [resultDict[jobid] for jobid in jobids]
 
-    def createDelegation(self, lifetime=None):
-        csr, delegationID = self.requestNewDelegation()
-        try:
-            pem = self._signCSR(csr, lifetime)
-            self.uploadDelegation(delegationID, pem)
-            return delegationID
-        except Exception:
-            self.deleteDelegation(delegationID)
-            raise
+    def createDelegation(self, proxyLifetime=None):
+        delegationID, csr = self.newDelegation()
+        if not self.token:
+            try:
+                pem = self._signCSR(csr, proxyLifetime)
+                self.uploadCertDelegation(delegationID, pem)
+                return delegationID
+            except Exception:
+                self.deleteDelegation(delegationID)
+                raise
+        return delegationID
 
-    def renewDelegation(self, delegationID, lifetime=None):
-        csr = self.requestDelegationRenewal(delegationID)
-        pem = self._signCSR(csr, lifetime)
-        try:
-            self.uploadDelegation(delegationID, pem)
-        except Exception:
-            self.deleteDelegation(delegationID)
-            raise
+    def refreshDelegation(self, delegationID, proxyLifetime=None):
+        csr = self.renewDelegation(delegationID)
+        if not self.token:
+            try:
+                pem = self._signCSR(csr, proxyLifetime)
+                self.uploadDelegation(delegationID, pem)
+            except Exception:
+                self.deleteDelegation(delegationID)
+                raise
 
     def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
         raise Exception("Not implemented in the base class")
@@ -427,8 +464,8 @@ class ARCRest:
     ### Static operations ###
 
     @classmethod
-    def getAPIVersionsStatic(cls, httpClient, apiBase="/arex"):
-        status, text = cls._requestJSONStatic(httpClient, "GET", f"{apiBase}/rest")
+    def getAPIVersionsStatic(cls, httpClient, apiBase="/arex", token=None):
+        status, text = cls._requestJSONStatic(httpClient, "GET", f"{apiBase}/rest", token=token)
         if status != 200:
             raise ARCHTTPError(status, text)
         apiVersions = json.loads(text)
@@ -446,7 +483,7 @@ class ARCRest:
     #         parameters without the proper ordering of definitions which is
     #         awkward and inflexible
     @classmethod
-    def getClient(cls, url=None, host=None, port=None, proxypath=None, log=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex", impls=None):
+    def getClient(cls, url=None, host=None, port=None, token=None, proxypath=None, log=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex", impls=None):
         httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, log=log, blocksize=blocksize, timeout=timeout)
 
         # get API version to implementation class mapping
@@ -455,7 +492,7 @@ class ARCRest:
             implementations = cls._getImplementations()
 
         # get API versions from CE
-        apiVersions = cls.getAPIVersionsStatic(httpClient, apiBase=apiBase)
+        apiVersions = cls.getAPIVersionsStatic(httpClient, apiBase, token)
         if not apiVersions:
             raise ARCError("No supported API versions on CE")
 
@@ -479,12 +516,12 @@ class ARCRest:
                 raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
 
         log.debug(f"API version {apiVersion} selected")
-        return implementations[apiVersion](httpClient, apiBase=apiBase, log=log)
+        return implementations[apiVersion](httpClient, token, proxypath, apiBase, log)
 
     ### Support methods ###
 
     def _downloadURL(self, url, path):
-        resp = self.httpClient.request("GET", url)
+        resp = self._request("GET", url)
 
         if resp.status != 200:
             text = resp.read().decode()
@@ -581,12 +618,12 @@ class ARCRest:
         return runtimes
 
     def _signCSR(self, csrStr, lifetime=None):
-        with open(self.httpClient.proxypath) as f:
+        with open(self.proxypath) as f:
             proxyStr = f.read()
         proxyCert, _, issuerChains = parsePEM(proxyStr)
         chain = proxyCert.public_bytes(serialization.Encoding.PEM).decode() + issuerChains + '\n'
         csr = x509.load_pem_x509_csr(csrStr.encode(), default_backend())
-        cert = signRequest(csr, self.httpClient.proxypath, lifetime=lifetime).decode()
+        cert = signRequest(csr, self.proxypath, lifetime=lifetime).decode()
         pem = (cert + chain).encode()
         return pem
 
@@ -676,8 +713,11 @@ class ARCRest:
                 return False
         return True
 
-    def _requestJSON(self, *args, **kwargs):
-        return self._requestJSONStatic(self.httpClient, *args, **kwargs)
+    def _requestJSON(self, method, endpoint, headers={}, token=None, jsonData=None, data=None, params={}):
+        headers["Accept"] = "application/json"
+        resp = self._request(method, endpoint, headers, token, jsonData, data, params)
+        text = resp.read().decode()
+        return resp.status, text
 
     def _manageJobs(self, jobs, action):
         if not jobs:
@@ -693,8 +733,7 @@ class ARCRest:
             jsonData = {"job": tomanage}
 
         # execute action and get JSON result
-        url = f"{self.apiPath}/jobs"
-        status, text = self._requestJSON("POST", url, jsonData=jsonData, params={"action": action})
+        status, text = self._requestJSON("POST", "/jobs", jsonData=jsonData, params={"action": action})
         if status != 201:
             raise ARCHTTPError(status, text)
         jsonData = json.loads(text)
@@ -811,12 +850,18 @@ class ARCRest:
 
         return [resultDict[i] for i in range(len(descs))]
 
+    def _request(self, method, endpoint, headers={}, token=None, jsonData=None, data=None, params={}):
+        if not token:
+            token = self.token
+        endpoint = f"{self.apiPath}{endpoint}"
+        return self.httpClient.request(method, endpoint, headers, token, jsonData, data, params)
+
     ### Static support methods ###
 
     @classmethod
-    def _requestJSONStatic(cls, httpClient, *args, headers={}, **kwargs):
+    def _requestJSONStatic(cls, httpClient, method, endpoint, headers={}, token=None, jsonData=None, data=None, params={}):
         headers["Accept"] = "application/json"
-        resp = httpClient.request(*args, headers=headers, **kwargs)
+        resp = httpClient.request(method, endpoint, headers, token, jsonData, data, params)
         text = resp.read().decode()
         return resp.status, text
 
@@ -1016,8 +1061,8 @@ class ARCRest:
 
 class ARCRest_1_0(ARCRest):
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger()):
+        super().__init__(httpClient, None, proxypath, apiBase, log)
         self.version = "1.0"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
@@ -1025,7 +1070,7 @@ class ARCRest_1_0(ARCRest):
         contentType = "application/xml" if isADL else "application/rsl"
         status, text = self._requestJSON(
             "POST",
-            f"{self.apiPath}/jobs",
+            "/jobs",
             data=description,
             headers={"Content-Type": contentType},
             params={"action": "new"},
@@ -1052,11 +1097,14 @@ class ARCRest_1_0(ARCRest):
     def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
         return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, blocksize, timeout, v1_0=True)
 
+    def getDelegationsList(self, type=None):
+        return super().getDelegationsList(type=None)
+
 
 class ARCRest_1_1(ARCRest):
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger()):
+        super().__init__(httpClient, token, proxypath, apiBase, log)
         self.version = "1.1"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
@@ -1069,7 +1117,7 @@ class ARCRest_1_1(ARCRest):
         headers = {"Content-Type": "application/xml" if isADL else "application/rsl"}
         status, text = self._requestJSON(
             "POST",
-            f"{self.apiPath}/jobs",
+            "/jobs",
             data=description,
             headers=headers,
             params=params,
