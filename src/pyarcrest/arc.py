@@ -317,12 +317,12 @@ class ARCRest:
             restClients.append(self.getClient(
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
-                token=self.token,
-                proxypath=self.proxypath,
-                log=self.log,
                 blocksize=blocksize,
                 timeout=timeout,
+                token=self.token,
+                proxypath=self.proxypath,
                 apiBase=self.apiBase,
+                log=self.log,
                 version=self.version,
             ))
         self.log.debug(f"Created {len(restClients)} upload workers")
@@ -376,12 +376,12 @@ class ARCRest:
             restClients.append(self.getClient(
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
-                token=self.token,
-                proxypath=self.proxypath,
-                log=self.log,
                 blocksize=blocksize,
                 timeout=timeout,
+                token=self.token,
+                proxypath=self.proxypath,
                 apiBase=self.apiBase,
+                log=self.log,
                 version=self.version,
             ))
 
@@ -483,8 +483,8 @@ class ARCRest:
     #         parameters without the proper ordering of definitions which is
     #         awkward and inflexible
     @classmethod
-    def getClient(cls, url=None, host=None, port=None, token=None, proxypath=None, log=getNullLogger(), blocksize=None, timeout=None, version=None, apiBase="/arex", impls=None):
-        httpClient = HTTPClient(url=url, host=host, port=port, proxypath=proxypath, log=log, blocksize=blocksize, timeout=timeout)
+    def getClient(cls, url=None, host=None, port=None, blocksize=None, timeout=None, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), version=None, impls=None):
+        httpClient = HTTPClient(url, host, port, blocksize, timeout, proxypath, log)
 
         # get API version to implementation class mapping
         implementations = impls
