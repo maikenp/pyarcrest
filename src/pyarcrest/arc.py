@@ -59,7 +59,7 @@ class ARCRest:
             raise ARCError("One of either token or proxy path is required for authentication")
         self.httpClient = httpClient
         self.token = token
-        self.proxypath = proxypath
+        self.proxypath = proxypath if not token else None
         self.apiBase = apiBase
         self.log = log
 
