@@ -1062,6 +1062,8 @@ class ARCRest:
 class ARCRest_1_0(ARCRest):
 
     def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger()):
+        if token:
+            raise ARCError("Token credentials not supported for API version 1.0")
         super().__init__(httpClient, None, proxypath, apiBase, log)
         self.version = "1.0"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
