@@ -81,7 +81,7 @@ def main():
     arcrest = ARCRest.getClient(url=args.cluster, proxypath=args.proxy, **kwargs)
 
     if args.command == "jobs" and args.jobs == "list":
-        status, text = arcrest._requestJSON("GET", f"{arcrest.apiPath}/jobs")
+        status, text = arcrest._requestJSON("GET", "/jobs")
         if status != 200:
             print(f"ARC jobs list error: {status} {text}")
         else:
@@ -104,7 +104,7 @@ def main():
 
         status, text = arcrest._requestJSON(
             "POST",
-            f"{arcrest.apiPath}/jobs?action={args.jobs}",
+            f"/jobs?action={args.jobs}",
             data=json.dumps(jsonData).encode(),
             headers={"Content-type": "application/json"},
         )
@@ -123,14 +123,14 @@ def main():
             print(job.id)
 
     elif args.command == "version":
-        status, text = arcrest._requestJSON("GET", f"{arcrest.apiBase}/rest")
+        status, text = arcrest._requestJSON("GET", "/rest")
         if status != 200:
             print(f"ARC CE REST API versions error: {status} {text}")
         else:
             print(json.dumps(json.loads(text), indent=4))
 
     elif args.command == "info":
-        status, text = arcrest._requestJSON("GET", f"{arcrest.apiPath}/info")
+        status, text = arcrest._requestJSON("GET", "/info")
         if status != 200:
             print(f"ARC CE info error: {status} {text}")
         else:
