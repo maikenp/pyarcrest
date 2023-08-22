@@ -287,7 +287,7 @@ class ARCRest:
         url = f"/delegations/{delegationID}"
         resp = self._request("POST", url, params={"action": "delete"})
         respstr = resp.read().decode()
-        if resp.status != 200:
+        if resp.status != 202:
             raise ARCHTTPError(resp.status, respstr)
 
     ### Higher level job operations ###
