@@ -429,7 +429,7 @@ class ARCRest:
         if not self.token:
             try:
                 pem = self._signCSR(csr, proxyLifetime)
-                self.uploadDelegation(delegationID, pem)
+                self.uploadCertDelegation(delegationID, pem)
             except Exception:
                 self.deleteDelegation(delegationID)
                 raise
