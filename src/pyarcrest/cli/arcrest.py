@@ -129,7 +129,9 @@ def main():
             try:
                 print(json.dumps(json.loads(text), indent=4))
             except json.JSONDecodeError as exc:
-                if exc.doc != "":
+                if exc.doc == "":
+                    print([])
+                else:
                     raise
 
     elif args.command == "jobs" and args.jobs in ("info", "clean"):
