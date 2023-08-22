@@ -67,6 +67,47 @@ def main():
     jobs_submit_parser.add_argument("jobdescs", type=pathlib.Path, nargs='+', help="job descs to submit")
     jobs_submit_parser.add_argument("--queue", type=str, help="queue to submit to")
 
+    delegs_parser = subparsers.add_parser(
+        "delegations",
+        help="execute operations on /delegations endpoint",
+        parents=[parserCommon],
+    )
+
+    delegs_subparsers = delegs_parser.add_subparsers(dest="delegations")
+
+    delegs_list_parser = delegs_subparsers.add_parser(
+        "list",
+        help="list user's delegations",
+        parents=[parserCommon],
+    )
+
+    delegs_new_parser = delegs_subparsers.add_parser(
+        "new",
+        help="create new delegation",
+        parents=[parserCommon],
+    )
+
+    delegs_get_parser = delegs_subparsers.add_parser(
+        "get",
+        help="get given delegation",
+        parents=[parserCommon],
+    )
+    delegs_get_parser.add_argument("delegid", type=str, help="delegation ID to get")
+
+    delegs_renew_parser = delegs_subparsers.add_parser(
+        "renew",
+        help="renew given delegation",
+        parents=[parserCommon],
+    )
+    delegs_renew_parser.add_argument("delegid", type=str, help="delegation ID to renew")
+
+    delegs_delete_parser = delegs_subparsers.add_parser(
+        "delete",
+        help="delete given delegation",
+        parents=[parserCommon],
+    )
+    delegs_delete_parser.add_argument("delegid", type=str, help="delegation ID to delete")
+
     args = parser.parse_args()
 
     kwargs = {}
@@ -135,3 +176,18 @@ def main():
             print(f"ARC CE info error: {status} {text}")
         else:
             print(json.dumps(json.loads(text), indent=4))
+
+    elif args.command == "delegations" and args.delegations == "list":
+        print(arcrest.getDelegationsList())
+
+    elif args.command == "delegations" and args.delegations == "new":
+        print(arcrest.createDelegation())
+
+    elif args.command == "delegations" and args.delegations == "get":
+        print(arcrest.getDelegation(args.delegid))
+
+    elif args.command == "delegations" and args.delegations == "renew":
+        arcrest.refreshDelegation(args.delegid)
+
+    elif args.command == "delegations" and args.delegations == "delete":
+        arcrest.deleteDelegation(args.delegid)
