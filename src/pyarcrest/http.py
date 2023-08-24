@@ -23,17 +23,17 @@ class HTTPClient:
             else:
                 raise HTTPClientError(f"URL scheme not http(s) but {parts.scheme}")
             host = parts.hostname
-            if host is None:
+            if not host:
                 raise HTTPClientError("No hostname in URL")
             port = parts.port
 
         else:
-            if host is None:
+            if not host:
                 raise HTTPClientError("No hostname parameter")
             useHTTPS = isHTTPS
             port = port
 
-        if proxypath is not None:
+        if proxypath:
             if not useHTTPS:
                 raise HTTPClientError("Cannot use proxy without HTTPS")
             else:
@@ -46,7 +46,7 @@ class HTTPClient:
         # TODO: must not pass for as long as python 3.6 is used
         #if blocksize is not None:
         #    kwargs["blocksize"] = blocksize
-        if timeout is not None:
+        if timeout:
             kwargs["timeout"] = timeout
 
         if useHTTPS:
