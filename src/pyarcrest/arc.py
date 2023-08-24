@@ -53,11 +53,15 @@ class ARCRest:
         additional implementations of attributes and methods are required from
         derived classes.
         """
-        if not token and not proxypath:
-            raise ARCError("One of either token or proxy path is required for authentication")
+        if token:
+            self.token = token
+            self.proxypath = None
+        elif proxypath:
+            self.token = None
+            self.proxypath = proxypath
+        else:
+            raise ARCError("One of either token or proxy is required for authentication")
         self.httpClient = httpClient
-        self.token = token
-        self.proxypath = proxypath if not token else None
         self.apiBase = apiBase
         self.log = log
 
@@ -229,30 +233,28 @@ class ARCRest:
             else:
                 raise
 
-    # TODO: document: token parameter and attribute take priority while proxy
-    #       is the default
-    #
-    # Token functionality is implemented in the base class as both auth methods
-    # will be supported in the future. The specific implementation of 1.0
-    # version will override the behavior. This is probably better than
-    # 1.1 being in specific class.
-    #
-    # token parameter allows delegation creation from non-attribute tokens.
-    #
-    # Returns a tuple of delegation ID and CSR (if using cert delegations,
-    # otherwise the second value is None and can be ignored).
-    def newDelegation(self):
-        headers = {}
+    # priorities: token over proxypath over whatever the access credential is
+    def newDelegation(self, token=None, proxypath=None):
         params = {"action": "new"}
-        if self.token:
-            headers["X-Delegation"] = f"Bearer {self.token}"
+        headers = {}
+        tokenDelegation = token or not proxypath and self.token
+        if tokenDelegation:
+            if not token:
+                token = self.token
+            headers["X-Delegation"] = f"Bearer {token}"
             params["type"] = "jwt"
-        resp = self._request("POST", "/delegations", headers=headers, params=params)
+
+        resp = self._request("POST", "/delegations", headers=headers, params=params, token=token)
         respstr = resp.read().decode()
-        if resp.status != 201:
-            raise ARCHTTPError(resp.status, respstr)
-        if self.token:
+
+        if token:
+            if resp.status != 200:
+                raise ARCHTTPError(resp.status, respstr)
             respstr = None
+        else:
+            if resp.status != 201:
+                raise ARCHTTPError(resp.status, respstr)
+
         return resp.getheader("Location").split("/")[-1], respstr
 
     def uploadCertDelegation(self, delegationID, cert):
@@ -272,18 +274,29 @@ class ARCRest:
         return respstr
 
     # returns CSR if proxy cert is used, None otherwise
-    def renewDelegation(self, delegationID):
-        headers = {}
+    #
+    # what happens if token is used to renew a proxy delegation?
+    def renewDelegation(self, delegationID, token=None, proxypath=None):
         params = {"action": "renew"}
-        if self.token:
-            headers["X-Delegation"] = f"Bearer {self.token}"
+        headers = {}
+        tokenDelegation = token or (not proxypath and self.token)
+        if tokenDelegation:
+            if not token:
+                token = self.token
+            headers["X-Delegation"] = f"Bearer {token}"
+
         url = f"/delegations/{delegationID}"
-        resp = self._request("POST", url, headers=headers, params=params)
+        resp = self._request("POST", url, headers=headers, params=params, token=token)
         respstr = resp.read().decode()
-        if resp.status != 201:
-            raise ARCHTTPError(resp.status, respstr)
-        if self.token:
+
+        if token:
+            if resp.status != 200:
+                raise ARCHTTPError(resp.status, respstr)
             respstr = None
+        else:
+            if resp.status != 201:
+                raise ARCHTTPError(resp.status, respstr)
+
         return respstr
 
     def deleteDelegation(self, delegationID):
@@ -419,9 +432,9 @@ class ARCRest:
 
         return [resultDict[jobid] for jobid in jobids]
 
-    def createDelegation(self, proxyLifetime=None):
-        delegationID, csr = self.newDelegation()
-        if not self.token:
+    def createDelegation(self, token=None, proxypath=None, proxyLifetime=None):
+        delegationID, csr = self.newDelegation(token, proxypath)
+        if csr:
             try:
                 pem = self._signCSR(csr, proxyLifetime)
                 self.uploadCertDelegation(delegationID, pem)
@@ -431,9 +444,9 @@ class ARCRest:
                 raise
         return delegationID
 
-    def refreshDelegation(self, delegationID, proxyLifetime=None):
-        csr = self.renewDelegation(delegationID)
-        if not self.token:
+    def refreshDelegation(self, delegationID, token=None, proxypath=None, proxyLifetime=None):
+        csr = self.renewDelegation(delegationID, token, proxypath)
+        if csr:
             try:
                 pem = self._signCSR(csr, proxyLifetime)
                 self.uploadCertDelegation(delegationID, pem)
@@ -467,6 +480,38 @@ class ARCRest:
                 errors.append(exc)
 
         return errors
+
+    ### auth API ###
+
+    # TODO: should this error on no credentials?
+    def updateCredential(self, token=None, proxypath=None):
+        if token:
+            # if token is updated, the connection is not required to be
+            # recreated
+            if self.token:
+                self.token = token
+                return
+            else:
+                self.token = token
+                self.proxypath = None
+        else:
+            self.proxypath = proxypath
+            if self.token:
+                self.token = None
+
+        # Since using proxy certificate as client certificate is part of
+        # connection object, the connection has to be recreated whenever the
+        # new proxy certificate is used or the proxy authenticated connection
+        # is switched to token authentication.
+        self.httpClient = self.getHTTPClient(
+            host=self.httpClient.conn.host,
+            port=self.httpClient.conn.port,
+            blocksize=self.sendsize,
+            timeout=self.timeout,
+            log=self.log,
+            token=token,
+            proxypath=proxypath,
+        )
 
     ### Static operations ###
 
