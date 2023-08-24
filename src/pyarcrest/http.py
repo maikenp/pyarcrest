@@ -38,7 +38,7 @@ class HTTPClient:
                 raise HTTPClientError("Cannot use proxy without HTTPS")
             else:
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS)
-                context.load_cert_chain(proxypath, keyfile=proxypath)
+                context.load_cert_chain(proxypath)
         else:
             context = None
 
