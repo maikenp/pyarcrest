@@ -36,8 +36,6 @@ from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
 from pyarcrest.http import HTTPClient
 from pyarcrest.x509 import parsePEM, signRequest
 
-# TODO: blocksize can only be used with Python >= 3.7
-
 
 class ARCRest:
 
@@ -47,7 +45,7 @@ class ARCRest:
         "output_status", "statistics"
     ]
 
-    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger()):
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), sendsize=None, recvsize=None, timeout=None):
         """
         Initialize the base object.
 
@@ -62,6 +60,10 @@ class ARCRest:
         self.proxypath = proxypath if not token else None
         self.apiBase = apiBase
         self.log = log
+
+        self.sendsize = sendsize
+        self.recvsize = recvsize or 2 ** 14  # 16KB default download size
+        self.timeout = timeout
 
     def close(self):
         self.httpClient.close()
@@ -89,6 +91,7 @@ class ARCRest:
                 jsonData = []
             else:
                 raise
+
         # /rest/1.0 compatibility
         if not isinstance(jsonData, list):
             jsonData = [jsonData]
@@ -292,7 +295,9 @@ class ARCRest:
 
     ### Higher level job operations ###
 
-    def uploadJobFiles(self, jobids, jobInputs, workers=10, blocksize=None, timeout=None):
+    def uploadJobFiles(self, jobids, jobInputs, workers=None, sendsize=None, timeout=None):
+        if not workers:
+            workers = 1
         resultDict = {jobid: [] for jobid in jobids}
 
         # create upload queue
@@ -317,8 +322,8 @@ class ARCRest:
             restClients.append(self.getClient(
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
-                blocksize=blocksize,
-                timeout=timeout,
+                sendsize=sendsize or self.sendsize,
+                timeout=timeout or self.timeout,
                 token=self.token,
                 proxypath=self.proxypath,
                 apiBase=self.apiBase,
@@ -352,7 +357,9 @@ class ARCRest:
 
         return [resultDict[jobid] for jobid in jobids]
 
-    def downloadJobFiles(self, downloadDir, jobids, outputFilters={}, diagnoseFiles={}, diagnoseDirs={}, workers=10, blocksize=None, timeout=None):
+    def downloadJobFiles(self, downloadDir, jobids, outputFilters={}, diagnoseFiles={}, diagnoseDirs={}, workers=None, recvsize=None, timeout=None):
+        if not workers:
+            workers = 1
         resultDict = {jobid: [] for jobid in jobids}
         transferQueue = TransferQueue(workers)
 
@@ -376,8 +383,8 @@ class ARCRest:
             restClients.append(self.getClient(
                 host=self.httpClient.conn.host,
                 port=self.httpClient.conn.port,
-                blocksize=blocksize,
-                timeout=timeout,
+                recvsize=recvsize or self.recvsize,
+                timeout=timeout or self.timeout,
                 token=self.token,
                 proxypath=self.proxypath,
                 apiBase=self.apiBase,
@@ -434,7 +441,7 @@ class ARCRest:
                 self.deleteDelegation(delegationID)
                 raise
 
-    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
+    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
         raise Exception("Not implemented in the base class")
 
     def matchJob(self, ceInfo, queue=None, runtimes=[], walltime=None):
@@ -476,6 +483,15 @@ class ARCRest:
         else:
             return apiVersions["version"]
 
+    @classmethod
+    def getHTTPClient(cls, url=None, host=None, port=None, blocksize=None, timeout=None, log=getNullLogger(), token=None, proxypath=None):
+        if token:
+            return HTTPClient(url, host, port, blocksize, timeout, log=log)
+        elif proxypath:
+            return HTTPClient(url, host, port, blocksize, timeout, proxypath, log)
+        else:
+            raise ARCError("One of either token or proxy path is required for authentication")
+
     # TODO: explain the rationale in documentation about the design of the API
     #       version selection mechanism:
     #       - specific API implementations are in classes
@@ -483,8 +499,8 @@ class ARCRest:
     #         parameters without the proper ordering of definitions which is
     #         awkward and inflexible
     @classmethod
-    def getClient(cls, url=None, host=None, port=None, blocksize=None, timeout=None, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), version=None, impls=None):
-        httpClient = HTTPClient(url, host, port, blocksize, timeout, proxypath, log)
+    def getClient(cls, url=None, host=None, port=None, sendsize=None, recvsize=None, timeout=None, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), version=None, impls=None):
+        httpClient = cls.getHTTPClient(url, host, port, sendsize, timeout, log, token, proxypath)
 
         # get API version to implementation class mapping
         implementations = impls
@@ -516,11 +532,11 @@ class ARCRest:
                 raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
 
         log.debug(f"API version {apiVersion} selected")
-        return implementations[apiVersion](httpClient, token, proxypath, apiBase, log)
+        return implementations[apiVersion](httpClient, token, proxypath, apiBase, log, sendsize, recvsize, timeout)
 
     ### Support methods ###
 
-    def _downloadURL(self, url, path):
+    def _downloadURL(self, url, path, recvsize=None):
         resp = self._request("GET", url)
 
         if resp.status != 200:
@@ -529,22 +545,11 @@ class ARCRest:
 
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
-        # python 3.6!!!!!!!!!!!!!!
-        # TODO: Should this be a standalone attribute of HTTPClient anyway?
-        #       Since blocksize is the size of the block output sending buffer
-        #       and is probably completely irrelevant to input buffer. Also,
-        #       the tuning capabilities would probably require separate
-        #       parameters for upload and download ...
-        try:
-            blocksize = self.httpClient.conn.blocksize
-        except:
-            blocksize = 8192
-
         with open(path, "wb") as f:
-            data = resp.read(blocksize)
+            data = resp.read(recvsize or self.recvsize)
             while data:
                 f.write(data)
-                data = resp.read(blocksize)
+                data = resp.read(recvsize or self.recvsize)
 
     # returns nothing if match successful, raises exception otherwise
     def _matchQueue(self, ceInfo, queue):
@@ -745,7 +750,7 @@ class ARCRest:
             return jsonData["job"]
 
     # TODO: think about what to log and how
-    def _submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None, v1_0=False):
+    def _submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None, v1_0=False):
         import arc
         ceInfo = self.getCEInfo()
 
@@ -842,7 +847,7 @@ class ARCRest:
 
         # upload jobs' local input data
         if uploadData:
-            errors = self.uploadJobFiles(uploadIDs, uploadInputs, workers, blocksize, timeout)
+            errors = self.uploadJobFiles(uploadIDs, uploadInputs, workers, sendsize, timeout or self.timeout)
             for jobix, uploadErrors in zip(uploadIXs, errors):
                 if uploadErrors:
                     jobid, state = resultDict[jobix]
@@ -1061,10 +1066,10 @@ class ARCRest:
 
 class ARCRest_1_0(ARCRest):
 
-    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger()):
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), sendsize=None, recvsize=None, timeout=None):
         if token:
             raise ARCError("Token credentials not supported for API version 1.0")
-        super().__init__(httpClient, None, proxypath, apiBase, log)
+        super().__init__(httpClient, None, proxypath, apiBase, log, sendsize, recvsize, timeout)
         self.version = "1.0"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
@@ -1096,8 +1101,8 @@ class ARCRest_1_0(ARCRest):
                 results.append((response["id"], response["state"]))
         return results
 
-    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
-        return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, blocksize, timeout, v1_0=True)
+    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
+        return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, sendsize, timeout, v1_0=True)
 
     def getDelegationsList(self, type=None):
         return super().getDelegationsList(type=None)
@@ -1105,8 +1110,8 @@ class ARCRest_1_0(ARCRest):
 
 class ARCRest_1_1(ARCRest):
 
-    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger()):
-        super().__init__(httpClient, token, proxypath, apiBase, log)
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), sendsize=None, recvsize=None, timeout=None):
+        super().__init__(httpClient, token, proxypath, apiBase, log, sendsize, recvsize, timeout)
         self.version = "1.1"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
@@ -1137,8 +1142,8 @@ class ARCRest_1_1(ARCRest):
                 results.append((response["id"], response["state"]))
         return results
 
-    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=10, blocksize=None, timeout=None):
-        return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, blocksize, timeout)
+    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
+        return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, sendsize, timeout)
 
 
 class Transfer:
