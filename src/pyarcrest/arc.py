@@ -18,6 +18,7 @@ static operation.
 import concurrent.futures
 import datetime
 import json
+import logging
 import os
 import queue
 import threading
@@ -27,7 +28,6 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-from pyarcrest.common import getNullLogger
 from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
                               DescriptionUnparseError, InputFileError,
                               InputUploadError, MatchmakingError,
@@ -35,6 +35,8 @@ from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
                               NoValueInARCResult)
 from pyarcrest.http import HTTPClient
 from pyarcrest.x509 import parsePEM, signRequest
+
+log = logging.getLogger(__name__)
 
 
 class ARCRest:
@@ -45,7 +47,7 @@ class ARCRest:
         "output_status", "statistics"
     ]
 
-    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), sendsize=None, recvsize=None, timeout=None):
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", sendsize=None, recvsize=None, timeout=None):
         """
         Initialize the base object.
 
@@ -63,7 +65,6 @@ class ARCRest:
             raise ARCError("One of either token or proxy is required for authentication")
         self.httpClient = httpClient
         self.apiBase = apiBase
-        self.log = log
 
         self.sendsize = sendsize
         self.recvsize = recvsize or 2 ** 14  # 16KB default download size
@@ -320,10 +321,10 @@ class ARCRest:
                 self._addInputTransfers(uploadQueue, jobid, inputFiles)
             except InputFileError as exc:
                 resultDict[jobid].append(exc)
-                self.log.debug(f"Skipping job {jobid} due to input file error: {exc}")
+                log.debug(f"Skipping job {jobid} due to input file error: {exc}")
 
         if uploadQueue.empty():
-            self.log.debug("No local inputs to upload")
+            log.debug("No local inputs to upload")
             return [resultDict[jobid] for jobid in jobids]
 
         errorQueue = queue.Queue()
@@ -340,10 +341,9 @@ class ARCRest:
                 token=self.token,
                 proxypath=self.proxypath,
                 apiBase=self.apiBase,
-                log=self.log,
                 version=self.version,
             ))
-        self.log.debug(f"Created {len(restClients)} upload workers")
+        log.debug(f"Created {len(restClients)} upload workers")
 
         # run upload threads on upload queue
         with concurrent.futures.ThreadPoolExecutor(max_workers=numWorkers) as pool:
@@ -354,7 +354,6 @@ class ARCRest:
                     restClient,
                     uploadQueue,
                     errorQueue,
-                    log=self.log,
                 ))
             concurrent.futures.wait(futures)
 
@@ -401,11 +400,10 @@ class ARCRest:
                 token=self.token,
                 proxypath=self.proxypath,
                 apiBase=self.apiBase,
-                log=self.log,
                 version=self.version,
             ))
 
-        self.log.debug(f"Created {len(restClients)} download workers")
+        log.debug(f"Created {len(restClients)} download workers")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             futures = []
@@ -417,7 +415,6 @@ class ARCRest:
                     errorQueue,
                     downloadDir,
                     outputFilters,
-                    self.log,
                 ))
             concurrent.futures.wait(futures)
 
@@ -508,7 +505,6 @@ class ARCRest:
             port=self.httpClient.conn.port,
             blocksize=self.sendsize,
             timeout=self.timeout,
-            log=self.log,
             token=token,
             proxypath=proxypath,
         )
@@ -529,11 +525,11 @@ class ARCRest:
             return apiVersions["version"]
 
     @classmethod
-    def getHTTPClient(cls, url=None, host=None, port=None, blocksize=None, timeout=None, log=getNullLogger(), token=None, proxypath=None):
+    def getHTTPClient(cls, url=None, host=None, port=None, blocksize=None, timeout=None, token=None, proxypath=None):
         if token:
-            return HTTPClient(url, host, port, blocksize, timeout, log=log)
+            return HTTPClient(url, host, port, blocksize, timeout)
         elif proxypath:
-            return HTTPClient(url, host, port, blocksize, timeout, proxypath, log)
+            return HTTPClient(url, host, port, blocksize, timeout, proxypath)
         else:
             raise ARCError("One of either token or proxy path is required for authentication")
 
@@ -544,8 +540,10 @@ class ARCRest:
     #         parameters without the proper ordering of definitions which is
     #         awkward and inflexible
     @classmethod
-    def getClient(cls, url=None, host=None, port=None, sendsize=None, recvsize=None, timeout=None, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), version=None, impls=None):
-        httpClient = cls.getHTTPClient(url, host, port, sendsize, timeout, log, token, proxypath)
+    def getClient(cls, url=None, host=None, port=None, sendsize=None, recvsize=None, timeout=None, token=None, proxypath=None, apiBase="/arex", version=None, impls=None):
+        if not proxypath:
+            proxypath = f"/tmp/x509up_u{os.getuid()}"
+        httpClient = cls.getHTTPClient(url, host, port, sendsize, timeout, token, proxypath)
 
         # get API version to implementation class mapping
         implementations = impls
@@ -577,7 +575,7 @@ class ARCRest:
                 raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
 
         log.debug(f"API version {apiVersion} selected")
-        return implementations[apiVersion](httpClient, token, proxypath, apiBase, log, sendsize, recvsize, timeout)
+        return implementations[apiVersion](httpClient, token, proxypath, apiBase, sendsize, recvsize, timeout)
 
     ### Support methods ###
 
@@ -920,7 +918,7 @@ class ARCRest:
         return {"1.0": ARCRest_1_0, "1.1": ARCRest_1_1}
 
     @classmethod
-    def _uploadTransferWorker(cls, restClient, uploadQueue, errorQueue, log=getNullLogger()):
+    def _uploadTransferWorker(cls, restClient, uploadQueue, errorQueue):
         while True:
             try:
                 upload = uploadQueue.get(block=False)
@@ -941,7 +939,7 @@ class ARCRest:
 
     # TODO: add bail out parameter for cancelEvent?
     @classmethod
-    def _downloadTransferWorker(cls, restClient, transferQueue, errorQueue, downloadDir, outputFilters={}, log=getNullLogger()):
+    def _downloadTransferWorker(cls, restClient, transferQueue, errorQueue, downloadDir, outputFilters={}):
         while True:
             try:
                 transfer = transferQueue.get()
@@ -1111,10 +1109,10 @@ class ARCRest:
 
 class ARCRest_1_0(ARCRest):
 
-    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), sendsize=None, recvsize=None, timeout=None):
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", sendsize=None, recvsize=None, timeout=None):
         if token:
             raise ARCError("Token credentials not supported for API version 1.0")
-        super().__init__(httpClient, None, proxypath, apiBase, log, sendsize, recvsize, timeout)
+        super().__init__(httpClient, None, proxypath, apiBase, sendsize, recvsize, timeout)
         self.version = "1.0"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
@@ -1155,8 +1153,8 @@ class ARCRest_1_0(ARCRest):
 
 class ARCRest_1_1(ARCRest):
 
-    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", log=getNullLogger(), sendsize=None, recvsize=None, timeout=None):
-        super().__init__(httpClient, token, proxypath, apiBase, log, sendsize, recvsize, timeout)
+    def __init__(self, httpClient, token=None, proxypath=None, apiBase="/arex", sendsize=None, recvsize=None, timeout=None):
+        super().__init__(httpClient, token, proxypath, apiBase, sendsize, recvsize, timeout)
         self.version = "1.1"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
