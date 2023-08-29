@@ -241,7 +241,7 @@ class ARCRest:
         if tokenDelegation:
             if not token:
                 token = self.token
-            headers["X-Delegation"] = f"Bearer {token}"
+            headers["X-Token-Delegation"] = f"Bearer {token}"
             params["type"] = "jwt"
 
         resp = self._request("POST", "/delegations", headers=headers, params=params, token=token)
@@ -283,7 +283,7 @@ class ARCRest:
         if tokenDelegation:
             if not token:
                 token = self.token
-            headers["X-Delegation"] = f"Bearer {token}"
+            headers["X-Token-Delegation"] = f"Bearer {token}"
 
         url = f"/delegations/{delegationID}"
         resp = self._request("POST", url, headers=headers, params=params, token=token)
