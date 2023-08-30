@@ -582,13 +582,12 @@ class ARCRest:
                     break
             if not apiVersion:
                 raise ARCError(f"No client support for CE supported API versions: {apiVersions}")
-
         log.debug(f"API version {apiVersion} selected")
         return implementations[apiVersion](httpClient, token, proxypath, apiBase, log, sendsize, recvsize, timeout)
 
     ### Support methods ###
         
-    def _extractJobdescription(self, descs, arcjobs={}, queue=None):
+    def _extractJobdescription(self, descs, arcjobs={}, queue=None, processDesc=True):
         import arc
 
         jobdescs = arc.JobDescriptionList()
@@ -929,7 +928,7 @@ class ARCRest:
 
         if parseDescs:
             # Extract job description using the ARC library 
-            arcjobs, resultDict = self._extractJobdescription(descs, queue)
+            arcjobs, resultDict = self._extractJobdescription(descs, queue, processDescs)
 
         # Do matchmaking - if no match, resultDict[i] will contain the error and the job will be removed from tosubmit
         if matchDescs:
