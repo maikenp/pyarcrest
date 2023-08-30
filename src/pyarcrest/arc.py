@@ -31,6 +31,7 @@ from pyarcrest.common import getNullLogger
 from pyarcrest.errors import (ARCError, ARCHTTPError, DescriptionParseError,
                               DescriptionUnparseError, InputFileError,
                               InputUploadError, MatchmakingError,
+
                               MissingDiagnoseFile, MissingOutputFile,
                               NoValueInARCResult)
 from pyarcrest.http import HTTPClient
@@ -102,7 +103,7 @@ class ARCRest:
 
         return [job["id"] for job in jsonData]
 
-    def createJobs(self, description, queue=None, delegationID=None, isADL=True):
+    def createJobs(self, description, queue=None, token=None, delegationID=None, isADL=True):
         raise Exception("Not implemented in the base class")
 
     def getJobsInfo(self, jobs):
@@ -242,13 +243,15 @@ class ARCRest:
             if not token:
                 token = self.token
             headers["X-Token-Delegation"] = f"Bearer {token}"
+            headers["Authorization"] = f"Bearer {token}"
             params["type"] = "jwt"
 
+        endpoint = f"{self.apiPath}/delegations"
         resp = self._request("POST", "/delegations", headers=headers, params=params, token=token)
         respstr = resp.read().decode()
 
         if token:
-            if resp.status != 200:
+            if resp.status != 201:
                 raise ARCHTTPError(resp.status, respstr)
             respstr = None
         else:
@@ -284,6 +287,7 @@ class ARCRest:
             if not token:
                 token = self.token
             headers["X-Token-Delegation"] = f"Bearer {token}"
+            headers["Authorization"] = f"Bearer {token}"
 
         url = f"/delegations/{delegationID}"
         resp = self._request("POST", url, headers=headers, params=params, token=token)
@@ -308,7 +312,10 @@ class ARCRest:
 
     ### Higher level job operations ###
 
-    def uploadJobFiles(self, jobids, jobInputs, workers=None, sendsize=None, timeout=None):
+    def uploadJobFiles(self, uploadDict, workers=None, sendsize=None, timeout=None):
+        jobids = uploadDict["IDs"]
+        jobInputs = uploadDict["Inputs"]
+        
         if not workers:
             workers = 1
         resultDict = {jobid: [] for jobid in jobids}
@@ -454,7 +461,7 @@ class ARCRest:
                 self.deleteDelegation(delegationID)
                 raise
 
-    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
+    def submitJobs(self, queue, descs=None, arcjobs=None, token=None, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
         raise Exception("Not implemented in the base class")
 
     def matchJob(self, ceInfo, queue=None, runtimes=[], walltime=None):
@@ -580,7 +587,96 @@ class ARCRest:
         return implementations[apiVersion](httpClient, token, proxypath, apiBase, log, sendsize, recvsize, timeout)
 
     ### Support methods ###
+        
+    def _extractJobdescription(self, descs, arcjobs={}, queue=None):
+        import arc
 
+        jobdescs = arc.JobDescriptionList()
+        resultDict = {}
+        for i in range(len(descs)):
+            # parse job description
+            if not arc.JobDescription_Parse(descs[i], jobdescs):
+                resultDict[i] = [DescriptionParseError("Failed to parse description")]
+                continue
+
+            #TODO: check if this is correct, not sure if descs[i] may already contain this string
+            desc_str = f"<ActivityDescription>{descs[i]}</ActivityDescription>"
+            if not arcjobs[i]:
+                arcjobs[i] = ARCJob(descstr)
+
+
+            """ Fill the arcdesc object for further extraction below """
+            arcdesc = arc.JobDescription_UnParse(jobdescs[-1]) 
+
+            # get queue, runtimes and walltime from description
+            jobqueue = arcdesc.Resources.QueueName
+            if not jobqueue:
+                jobqueue = queue
+                if v1_0:
+                    # set queue in job description
+                    arcjobs[i].Queue =  queue
+            
+            if v1_0:
+                # add delegation ID to description
+                arcjobs[i].delegid = delegationID
+
+            
+            runtimes = [str(env) for env in arcdesc.Resources.RunTimeEnvironment.getSoftwareList()]
+            if not runtimes:
+                runtimes = []
+            arcjobs[i].RunTimes = runtimes
+                
+            walltime = arcdesc.Resources.TotalWallTime.range.max
+            if walltime == -1:
+                walltime = None
+            arcjobs[i].RequestedTotalWallTime = walltime
+
+            # process job description
+            if processDescs:
+                self._processJobDescription(arcdesc)
+
+            arcjobs[i].inputFiles = arcdesc.DataStaging.Inputfiles
+            arcjobs[i].downloadFiles = arcdesc.DataStaging.OutputFiles
+
+            
+
+        return arcjobs, resultDict
+
+    def _doMatchmaking(self, arcjobs, resultDict):
+        ceInfo = self.getCEInfo()
+
+        for i, arcjob in arcjobs.items():
+
+            jobqueue = arcjob.Queue
+            runtimes = arcjob.RunTimes
+            walltime = arcjob.RequestedTotalWallTime
+
+            errors = self.matchJob(ceInfo, jobqueue, runtimes, walltime)
+            if errors:
+                resultDict[i] = errors
+
+        return resultDict
+
+
+    def _makeSubmitList(self, arcjobs, resultDict):
+        
+        tosubmit = []
+        
+        # Loop over arcdescs and fill the tosubmit if no errors in resultDict
+        # At this point, if the resultdict has an entry with key being the index of this job description -
+        # then there is an error and the job should not be submitted. 
+        for i, arcjob in arcjobs.items():
+
+            if i in resultDict:
+                continue
+            # get input files from arcjob 
+            inputFiles = arcjob.inputFiles
+            tosubmit.append((i, inputFiles))
+
+        return tosubmit
+
+
+                                 
     def _downloadURL(self, url, path, recvsize=None):
         resp = self._request("GET", url)
 
@@ -775,7 +871,6 @@ class ARCRest:
 
         # JSON data for request
         tomanage = [{"id": job} for job in jobs]
-
         # /rest/1.0 compatibility
         if len(tomanage) == 1:
             jsonData = {"job": tomanage[0]}
@@ -795,10 +890,29 @@ class ARCRest:
             return jsonData["job"]
 
     # TODO: think about what to log and how
-    def _submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None, v1_0=False):
-        import arc
-        ceInfo = self.getCEInfo()
+    def _submitJobs(self, queue, descs=None, arcjobs=None, token=None, delegationID=None, parseDescs=True, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None, v1_0=False):
 
+
+        """ 
+        Either parseDescs must be True or arcjobs must contain a dictionary of ARCJob objects 
+        containing already filled jobdescrstr, Queue, inputFiles, outputFiles, runTimes and Walltime
+
+        The former uses arclib to parse a job description string and creates a temporary arcdesc object for convenience. 
+
+        The latter assumes the job description is parsed in any other independent way. 
+            This use-case is relevant for instance when working together with web-form collecting ARC job parameters. 
+            It does not rely on arclib 
+        """
+
+        """ If this method was called with a dict of arcjobs 
+        containing jobdescriptions instead of a list of descs, 
+        then for convenience populate the descs list with  arcjob.descstr
+        """
+        if not descs:
+            descs = []
+            for idx in list(arcjobs.keys()):
+                descs.append(arcjobs[idx].descstr)
+                
         if not delegationID:
             delegationID = self.createDelegation()
 
@@ -813,72 +927,36 @@ class ARCRest:
         # jobid and state for successful submission.
         resultDict = {}
 
-        jobdescs = arc.JobDescriptionList()
-        bulkdesc = ""
-        for i in range(len(descs)):
-            # parse job description
-            if not arc.JobDescription_Parse(descs[i], jobdescs):
-                resultDict[i] = [DescriptionParseError("Failed to parse description")]
-                continue
-            arcdesc = jobdescs[-1]
+        if parseDescs:
+            # Extract job description using the ARC library 
+            arcjobs, resultDict = self._extractJobdescription(descs, queue)
 
-            # get queue, runtimes and walltime from description
-            jobqueue = arcdesc.Resources.QueueName
-            if not jobqueue:
-                jobqueue = queue
-                if v1_0:
-                    # set queue in job description
-                    arcdesc.Resources.QueueName = queue
-            runtimes = [str(env) for env in arcdesc.Resources.RunTimeEnvironment.getSoftwareList()]
-            if not runtimes:
-                runtimes = []
-            walltime = arcdesc.Resources.TotalWallTime.range.max
-            if walltime == -1:
-                walltime = None
+        # Do matchmaking - if no match, resultDict[i] will contain the error and the job will be removed from tosubmit
+        if matchDescs:
+            resultDict = self._doMatchmaking(arcjobs, resultDict)
 
-            # do matchmaking
-            if matchDescs:
-                errors = self.matchJob(ceInfo, jobqueue, runtimes, walltime)
-                if errors:
-                    resultDict[i] = errors
-                    continue
-
-            if v1_0:
-                # add delegation ID to description
-                arcdesc.DataStaging.DelegationID = delegationID
-
-            # process job description
-            if processDescs:
-                self._processJobDescription(arcdesc)
-
-            # get input files from description
-            inputFiles = self._getArclibInputFiles(arcdesc)
-
-            # unparse modified description, remove xml version node because it
-            # is not accepted by ARC CE, add to bulk description
-            unparseResult = arcdesc.UnParse("emies:adl")
-            if not unparseResult[0]:
-                resultDict[i] = [DescriptionUnparseError("Could not unparse processed description")]
-                continue
-            descstart = unparseResult[1].find("<ActivityDescription")
-            bulkdesc += unparseResult[1][descstart:]
-
-            tosubmit.append((i, inputFiles))
+        # Loops over the resultDict - if it contains a tuple of idx and job
+        tosubmit = self._makeSubmitList(arcjobs, resultDict)
 
         if not tosubmit:
             return [resultDict[i] for i in range(len(descs))]
 
-        # merge into bulk description
-        if len(tosubmit) > 1:
-            bulkdesc = f"<ActivityDescriptions>{bulkdesc}</ActivityDescriptions>"
+
+        bulkdesc = "<ActivityDescriptions>"
+        idxs = [subitem[0] for subitem in tosubmit]
+        for i in idxs:
+            bulkdesc += arcjobs[i].descstr
+        bulkdesc += "</ActivityDescriptions>"
+            
 
         # submit jobs to ARC
         # TODO: handle exceptions
-        results = self.createJobs(bulkdesc, queue, delegationID)
+        results = self.createJobs(bulkdesc, queue, token, delegationID)
 
-        uploadIXs = []  # a list of job indexes for proper result processing
-        uploadIDs = []  # a list of jobids for which to upload files
-        uploadInputs = []  # a list of job input file dicts for upload
+        # IXs: a list of job indexes for proper result processing
+        # IDs: a list of jobids for which to upload files
+        # Inputs: a list of job input file dicts for upload
+        uploadDict = {"IXs":[],"IDs":[],"Inputs":[]}
 
         for (jobix, inputFiles), result in zip(tosubmit, results):
             if isinstance(result, ARCHTTPError):
@@ -886,23 +964,26 @@ class ARCRest:
             else:
                 jobid, state = result
                 resultDict[jobix] = (jobid, state)
-                uploadIDs.append(jobid)
-                uploadInputs.append(inputFiles)
-                uploadIXs.append(jobix)
+                uploadDict["IDs"].append(jobid)
+                uploadDict["Inputs"].append(inputFiles)
+                uploadDict["IXs"].append(jobix)
+
 
         # upload jobs' local input data
-        if uploadData:
-            errors = self.uploadJobFiles(uploadIDs, uploadInputs, workers, sendsize, timeout or self.timeout)
-            for jobix, uploadErrors in zip(uploadIXs, errors):
+        if uploadData:                
+            errors = self.uploadJobFiles(uploadDict, workers, sendsize, timeout or self.timeout)
+            for jobix, uploadErrors in zip(uploadDict["IXs"], errors):
                 if uploadErrors:
                     jobid, state = resultDict[jobix]
                     resultDict[jobix] = [InputUploadError(jobid, state, uploadErrors)]
+        
 
         return [resultDict[i] for i in range(len(descs))]
 
     def _request(self, method, endpoint, headers={}, token=None, jsonData=None, data=None, params={}):
         if not token:
             token = self.token
+
         endpoint = f"{self.apiPath}{endpoint}"
         return self.httpClient.request(method, endpoint, headers, token, jsonData, data, params)
 
@@ -1118,13 +1199,13 @@ class ARCRest_1_0(ARCRest):
         self.version = "1.0"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
-    def createJobs(self, description, queue=None, delegationID=None, isADL=True):
+    def createJobs(self, description, queue=None, token=None, delegationID=None, isADL=True):
         contentType = "application/xml" if isADL else "application/rsl"
         status, text = self._requestJSON(
             "POST",
             "/jobs",
             data=description,
-            headers={"Content-Type": contentType},
+            headers={"Content-Type": contentType, "Authorization":f"Bearer {token}"},
             params={"action": "new"},
         )
         if status != 201:
@@ -1146,8 +1227,8 @@ class ARCRest_1_0(ARCRest):
                 results.append((response["id"], response["state"]))
         return results
 
-    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
-        return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, sendsize, timeout, v1_0=True)
+    def submitJobs(self, queue, descs=None, arcjobs=None, token=None, delegationID=None, parseDescs=True, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
+        return self._submitJobs(queue, descs, arcjobs, token, delegationID, parseDescs, processDescs, matchDescs, uploadData, workers, sendsize, timeout, v1_0=True)
 
     def getDelegationsList(self, type=None):
         return super().getDelegationsList(type=None)
@@ -1160,13 +1241,15 @@ class ARCRest_1_1(ARCRest):
         self.version = "1.1"
         self.apiPath = f"{self.apiBase}/rest/{self.version}"
 
-    def createJobs(self, description, queue=None, delegationID=None, isADL=True):
+    def createJobs(self, description, queue=None, token=None, delegationID=None, isADL=True):
         params = {"action": "new"}
         if queue:
             params["queue"] = queue
         if delegationID:
             params["delegation_id"] = delegationID
+
         headers = {"Content-Type": "application/xml" if isADL else "application/rsl"}
+        headers["Authorization"] = f"Bearer {token}"
         status, text = self._requestJSON(
             "POST",
             "/jobs",
@@ -1187,8 +1270,9 @@ class ARCRest_1_1(ARCRest):
                 results.append((response["id"], response["state"]))
         return results
 
-    def submitJobs(self, descs, queue, delegationID=None, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
-        return self._submitJobs(descs, queue, delegationID, processDescs, matchDescs, uploadData, workers, sendsize, timeout)
+
+    def submitJobs(self, queue, descs=None, arcjobs=None, token=None, delegationID=None, parseDescs=True, processDescs=True, matchDescs=True, uploadData=True, workers=None, sendsize=None, timeout=None):
+        return self._submitJobs(queue, descs, arcjobs, token, delegationID, parseDescs, processDescs, matchDescs, uploadData, workers, sendsize, timeout)
 
 
 class Transfer:
@@ -1221,6 +1305,7 @@ class ARCJob:
         self.RequestedTotalWallTime = None
         self.RequestedTotalCPUTime = None
         self.RequestedSlots = None
+        self.RunTimes = []
         self.ExitCode = None
         self.Type = None
         self.LocalIDFromManager = None
